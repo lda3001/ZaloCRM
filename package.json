@@ -1,0 +1,12 @@
+{
+  "name": "zalocrm",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ZaloCRM — convenience workspace scripts (backend + frontend + desktop)",
+  "scripts": {
+    "build:backend": "npm -C backend run build",
+    "build:frontend": "npm -C frontend run build",
+    "build:desktop": "npm -C desktop run build:win",
+    "build:all": "npm run build:backend && npm run build:frontend && npm run build:desktop"
+  }
+}

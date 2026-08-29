@@ -1,0 +1,49 @@
+{
+  "name": "zalocrm-desktop",
+  "version": "1.0.0",
+  "description": "ZaloCRM Electron desktop wrapper",
+  "private": true,
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "build:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.zalocrm.desktop",
+    "productName": "ZaloCRM",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../backend/dist", "to": "backend/dist" },
+      { "from": "../backend/node_modules", "to": "backend/node_modules" },
+      { "from": "../backend/prisma", "to": "backend/prisma" },
+      { "from": "../backend/package.json", "to": "backend/package.json" },
+      { "from": "../frontend-react/dist", "to": "backend/static" }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
+

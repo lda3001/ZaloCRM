@@ -1,0 +1,81 @@
+import { lazy, useEffect, useState } from 'react';
+import { Navigate, Outlet } from 'react-router-dom';
+import { Spinner } from '@heroui/react';
+import { selectIsAuthenticated, useAuthStore } from '../stores/auth';
+
+// Lazy-loaded views for the nine authenticated app routes plus auth/404 pages.
+export const LoginView = lazy(() => import('../views/LoginView'));
+export const SetupView = lazy(() => import('../views/SetupView'));
+export const NotFoundView = lazy(() => import('../views/NotFoundView'));
+export const DashboardView = lazy(() => import('../views/DashboardView'));
+export const ChatView = lazy(() => import('../views/ChatView'));
+export const ContactsView = lazy(() => import('../views/ContactsView'));
+export const ZaloAccountsView = lazy(() => import('../views/ZaloAccountsView'));
+export const AppointmentsView = lazy(() => import('../views/AppointmentsView'));
+export const OrdersView = lazy(() => import('../views/OrdersView'));
+export const ReportsView = lazy(() => import('../views/ReportsView'));
+export const SettingsView = lazy(() => import('../views/SettingsView'));
+export const ApiSettingsView = lazy(() => import('../views/ApiSettingsView'));
+
+// Page metadata for the nine authenticated app routes.
+export const appPages = [
+  { path: '/', title: 'Tổng quan', label: 'Tổng quan' },
+  { path: '/chat', title: 'Tin nhắn', label: 'Tin nhắn' },
+  { path: '/contacts', title: 'Khách hàng', label: 'Khách hàng' },
+  { path: '/zalo-accounts', title: 'Tài khoản Zalo', label: 'Tài khoản Zalo' },
+  { path: '/appointments', title: 'Lịch hẹn', label: 'Lịch hẹn' },
+  { path: '/orders', title: 'Đơn hàng', label: 'Đơn hàng' },
+  { path: '/reports', title: 'Báo cáo', label: 'Báo cáo' },
+  { path: '/settings', title: 'Cài đặt', label: 'Nhân viên' },
+  { path: '/api-settings', title: 'API & Webhook', label: 'API & Webhook' },
+];
+
+// Ports the Vue router.beforeEach auth guard: protected routes require a token,
+// and a token without a loaded profile triggers fetchProfile-on-guard (init).
+export function RequireAuth() {
+  const token = useAuthStore((s) => s.token);
+  const user = useAuthStore((s) => s.user);
+  const init = useAuthStore((s) => s.init);
+  const isAuthenticated = useAuthStore(selectIsAuthenticated);
+  const [checking, setChecking] = useState(() => Boolean(token && !user));
+
+  useEffect(() => {
+    let active = true;
+
+    if (!token) {
+      setChecking(false);
+      return undefined;
+    }
+
+    if (!user) {
+      (async () => {
+        await init();
+        if (active) setChecking(false);
+      })();
+    } else {
+      setChecking(false);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [token, user, init]);
+
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (checking) {
+    return (
+      <div className="flex h-full items-center justify-center py-24">
+        <Spinner label="Đang tải..." />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <Outlet />;
+}
