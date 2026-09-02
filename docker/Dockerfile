@@ -1,9 +1,9 @@
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend-react/package.json frontend-react/package-lock.json ./
 RUN npm ci
-COPY frontend/ ./
+COPY frontend-react/ ./
 RUN npm run build
 
 # ── Stage 2: Build backend ───────────────────────────────────────────────────

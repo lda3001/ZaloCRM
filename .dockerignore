@@ -1,0 +1,10 @@
+.git
+.codex
+.env
+**/node_modules
+**/dist
+backups
+desktop
+assets
+plans
+*.log
