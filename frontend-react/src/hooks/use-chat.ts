@@ -13,6 +13,8 @@ interface ZaloAccount {
   id: string;
   displayName: string | null;
   zaloUid?: string | null;
+  avatarUrl?: string | null;
+  phone?: string | null;
 }
 
 interface ConversationMessage {
@@ -42,6 +44,7 @@ export interface Message {
   contentType: string;
   senderType: string;
   senderName: string | null;
+  senderUid: string | null;
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
@@ -68,6 +71,8 @@ export function useChat() {
 
   const selectedConvIdRef = useRef<string | null>(null);
   selectedConvIdRef.current = selectedConvId;
+  const messageAbortRef = useRef<AbortController | null>(null);
+  const messageRequestSeqRef = useRef(0);
 
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
@@ -110,23 +115,37 @@ export function useChat() {
   }, []);
 
   const fetchMessages = useCallback(async (convId: string) => {
+    messageAbortRef.current?.abort();
+    const controller = new AbortController();
+    messageAbortRef.current = controller;
+    const requestSeq = ++messageRequestSeqRef.current;
     setLoadingMsgs(true);
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { limit: 100 },
+        params: { limit: 200 },
+        signal: controller.signal,
       });
-      setMessages(res.data.messages);
-    } catch (err) {
+      if (
+        requestSeq === messageRequestSeqRef.current
+        && selectedConvIdRef.current === convId
+      ) {
+        setMessages(res.data.messages);
+      }
+    } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
       console.error('Failed to fetch messages:', err);
     } finally {
-      setLoadingMsgs(false);
+      if (requestSeq === messageRequestSeqRef.current) setLoadingMsgs(false);
     }
   }, []);
 
   const selectConversation = useCallback(
     async (convId: string) => {
+      const changedConversation = selectedConvIdRef.current !== convId;
+      selectedConvIdRef.current = convId;
       setSelectedConvId(convId);
       setActiveConversation(convId);
+      if (changedConversation) setMessages([]);
       await fetchMessages(convId);
       // Fetch full conversation detail to populate contact CRM fields.
       try {
@@ -174,6 +193,33 @@ export function useChat() {
       setSendingMsg(false);
     }
   }, []);
+
+  const sendAttachments = useCallback(async (files: File[], caption?: string): Promise<boolean> => {
+    if (!selectedConvIdRef.current || files.length === 0) return false;
+    setSendingMsg(true);
+    try {
+      const form = new FormData();
+      for (const file of files) form.append('files', file, file.name);
+      if (caption?.trim()) form.append('caption', caption.trim());
+      const res = await api.post(
+        `/conversations/${selectedConvIdRef.current}/attachments`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 },
+      );
+      const sent = (res.data?.messages ?? []) as Message[];
+      setMessages((prev) => {
+        const existing = new Set(prev.map((m) => m.id));
+        return [...prev, ...sent.filter((m) => !existing.has(m.id))];
+      });
+      void fetchConversations();
+      return true;
+    } catch (err) {
+      console.error('Failed to send attachments:', err);
+      return false;
+    } finally {
+      setSendingMsg(false);
+    }
+  }, [fetchConversations]);
 
   const initSocket = useCallback(() => {
     const onMsg = (data: { message: Message; conversationId: string }) => {
@@ -235,6 +281,7 @@ export function useChat() {
     fetchConversations,
     selectConversation,
     sendMessage,
+    sendAttachments,
     initSocket,
     destroySocket,
   };

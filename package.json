@@ -5,8 +5,12 @@
   "description": "ZaloCRM — convenience workspace scripts (backend + frontend + desktop)",
   "scripts": {
     "build:backend": "npm -C backend run build",
-    "build:frontend": "npm -C frontend run build",
+    "build:frontend": "npm -C frontend-react run build",
+    "sync:frontend": "node scripts/sync-frontend.mjs",
+    "build:server": "npm run build:backend && npm run build:frontend && npm run sync:frontend",
     "build:desktop": "npm -C desktop run build:win",
-    "build:all": "npm run build:backend && npm run build:frontend && npm run build:desktop"
+    "build:all": "npm run build:server && npm run build:desktop",
+    "start:backend": "npm -C backend start",
+    "dev:backend": "npm -C backend run dev"
   }
 }

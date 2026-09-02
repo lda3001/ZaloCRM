@@ -1,5 +1,7 @@
 node_modules/
 dist/
+desktop/dist-separated/
+desktop/dist-separated-installer/
 .env
 *.log
 backups/

@@ -3,6 +3,7 @@ import { api } from '../api/client';
 
 export interface Contact {
   id: string;
+  zaloUid?: string | null;
   fullName: string | null;
   phone: string | null;
   email?: string | null;

@@ -54,7 +54,7 @@ export async function chatRoutes(app: FastifyInstance) {
         where,
         include: {
           contact: { select: { id: true, fullName: true, phone: true, avatarUrl: true, zaloUid: true } },
-          zaloAccount: { select: { id: true, displayName: true, zaloUid: true } },
+          zaloAccount: { select: { id: true, displayName: true, zaloUid: true, avatarUrl: true, phone: true } },
           messages: {
             take: 1,
             orderBy: { sentAt: 'desc' },
@@ -80,7 +80,7 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       include: {
         contact: true,
-        zaloAccount: { select: { id: true, displayName: true, zaloUid: true, status: true } },
+        zaloAccount: { select: { id: true, displayName: true, zaloUid: true, avatarUrl: true, phone: true, status: true } },
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
@@ -91,6 +91,7 @@ export async function chatRoutes(app: FastifyInstance) {
   app.get('/api/v1/conversations/:id/group-info', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
+    const { memberIds: requestedMemberIds = '' } = request.query as QueryParams;
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId, threadType: 'group' },
       select: {
@@ -116,11 +117,25 @@ export async function chatRoutes(app: FastifyInstance) {
       if (!group) return reply.status(404).send({ error: 'Không tìm thấy thông tin nhóm' });
 
       const currentMembers = Array.isArray(group.currentMems) ? group.currentMems : [];
-      const normalizeMemberId = (value: unknown) => String(value ?? '').replace(/_0$/, '');
-      const memberIds = Array.from(new Set([
+      // Newer Zalo group responses commonly leave memberIds/currentMems empty
+      // and expose the real roster in memVerList as "<uid>_<version>".
+      const normalizeMemberId = (value: unknown) => String(value ?? '').split('_')[0];
+      const memVerEntries = Array.isArray(group.memVerList)
+        ? group.memVerList
+        : group.memVerList && typeof group.memVerList === 'object'
+          ? Object.keys(group.memVerList)
+          : [];
+      const allMemberIds = Array.from(new Set([
         ...(Array.isArray(group.memberIds) ? group.memberIds : []),
+        ...memVerEntries,
         ...currentMembers.map((member: any) => member.id).filter(Boolean),
       ].map(normalizeMemberId).filter(Boolean))) as string[];
+      const requestedIds = new Set(
+        requestedMemberIds.split(',').map(normalizeMemberId).filter(Boolean),
+      );
+      const memberIds = requestedIds.size > 0
+        ? Array.from(requestedIds)
+        : allMemberIds;
       const profiles: Record<string, any> = {};
 
       for (let index = 0; index < memberIds.length; index += 100) {
@@ -134,7 +149,10 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       const profileById = new Map(
-        Object.values(profiles).map((profile: any) => [normalizeMemberId(profile.id), profile]),
+        Object.entries(profiles).map(([profileKey, profile]: [string, any]) => [
+          normalizeMemberId(profile.id || profileKey),
+          profile,
+        ]),
       );
       const currentById = new Map(
         currentMembers.map((member: any) => [normalizeMemberId(member.id), member]),
@@ -149,7 +167,12 @@ export async function chatRoutes(app: FastifyInstance) {
           id: normalizeMemberId(profile.id ?? memberId),
           displayName: profile.displayName || profile.dName || profile.zaloName || 'Thành viên',
           zaloName: profile.zaloName || null,
-          avatarUrl: profile.avatar || profile.avatar_25 || null,
+          avatarUrl: profile.avatar
+            || profile.avatar_25
+            || profile.avatarUrl
+            || profile.fullAvt
+            || profile.avt
+            || null,
           isAdmin: adminIds.has(memberId),
           isCreator: creatorId === memberId,
         };
@@ -443,6 +466,120 @@ export async function chatRoutes(app: FastifyInstance) {
 
     return { conversation, created: true };
   });
+
+  // Create a private conversation from a clicked group member. The profile is
+  // resolved from Zalo server-side so the client cannot create arbitrary CRM
+  // identities with spoofed names or avatars.
+  app.post(
+    '/api/v1/zalo-accounts/:zaloAccountId/conversations/for-user',
+    { preHandler: requireZaloAccess('chat') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const { zaloAccountId } = request.params as { zaloAccountId: string };
+      const { zaloUid } = request.body as { zaloUid?: string };
+      const normalizedUid = String(zaloUid || '').replace(/_0$/, '');
+      if (!normalizedUid) return reply.status(400).send({ error: 'zaloUid required' });
+
+      const account = await prisma.zaloAccount.findFirst({
+        where: { id: zaloAccountId, orgId: user.orgId },
+        select: { id: true, zaloUid: true },
+      });
+      if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
+      if (account.zaloUid === normalizedUid) {
+        return reply.status(400).send({ error: 'Không thể tự nhắn tin cho chính tài khoản này' });
+      }
+
+      const instance = zaloPool.getInstance(zaloAccountId);
+      if (!instance?.api) return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+
+      let profile: any = null;
+      try {
+        const result = await instance.api.getUserInfo(normalizedUid);
+        const profiles = result?.changed_profiles || result?.profiles || {};
+        profile = profiles[normalizedUid]
+          || profiles[`${normalizedUid}_0`]
+          || Object.values(profiles)[0]
+          || null;
+      } catch (err) {
+        logger.warn(`[chat] resolve clicked Zalo user ${normalizedUid} failed: ${String(err)}`);
+      }
+      if (!profile) {
+        try {
+          const result = await instance.api.getGroupMembersInfo([normalizedUid]);
+          const profiles = result?.profiles || {};
+          profile = profiles[normalizedUid]
+            || profiles[`${normalizedUid}_0`]
+            || Object.values(profiles)[0]
+            || null;
+        } catch (err) {
+          logger.warn(`[chat] resolve clicked group member ${normalizedUid} failed: ${String(err)}`);
+        }
+      }
+      if (!profile) {
+        return reply.status(404).send({ error: 'Không lấy được thông tin thành viên từ Zalo' });
+      }
+
+      const displayName = profile.zaloName
+        || profile.zalo_name
+        || profile.displayName
+        || profile.display_name
+        || 'Khách Zalo';
+      const avatarUrl = profile.avatar || profile.avatar_25 || null;
+      const phone = profile.phoneNumber || profile.phone || null;
+
+      let contact = await prisma.contact.findFirst({
+        where: { orgId: user.orgId, zaloUid: normalizedUid },
+        select: { id: true },
+      });
+      if (contact) {
+        await prisma.contact.update({
+          where: { id: contact.id },
+          data: {
+            fullName: displayName,
+            ...(avatarUrl ? { avatarUrl } : {}),
+            ...(phone ? { phone } : {}),
+          },
+        });
+      } else {
+        contact = await prisma.contact.create({
+          data: {
+            id: randomUUID(),
+            orgId: user.orgId,
+            zaloUid: normalizedUid,
+            fullName: displayName,
+            avatarUrl,
+            phone,
+            source: 'Zalo',
+            status: 'new',
+          },
+          select: { id: true },
+        });
+      }
+
+      const existing = await prisma.conversation.findFirst({
+        where: { zaloAccountId, externalThreadId: normalizedUid },
+        select: { id: true },
+      });
+      if (existing) return { conversation: existing, contact, created: false };
+
+      const conversation = await prisma.conversation.create({
+        data: {
+          id: randomUUID(),
+          orgId: user.orgId,
+          zaloAccountId,
+          contactId: contact.id,
+          threadType: 'user',
+          externalThreadId: normalizedUid,
+          lastMessageAt: new Date(),
+          unreadCount: 0,
+          isReplied: true,
+        },
+        select: { id: true },
+      });
+
+      return { conversation, contact, created: true };
+    },
+  );
 
   // ── Mark conversation as read ────────────────────────────────────────────
   app.post('/api/v1/conversations/:id/mark-read', async (request: FastifyRequest, reply: FastifyReply) => {

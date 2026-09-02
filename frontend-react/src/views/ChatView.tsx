@@ -35,6 +35,7 @@ export default function ChatView() {
     fetchConversations,
     selectConversation,
     sendMessage,
+    sendAttachments,
     initSocket,
   } = useChat();
 
@@ -202,7 +203,17 @@ export default function ChatView() {
             sending={sendingMsg}
             showContactPanel={showContactPanel}
             onSend={sendMessage}
+            onSendFiles={sendAttachments}
             onToggleContactPanel={() => setShowContactPanel((v) => !v)}
+            onOpenContactPanel={() => setShowContactPanel(true)}
+            onOpenConversation={(conversationId) => {
+              void fetchConversations();
+              void selectConversation(conversationId);
+              if (isMobile) setMobileView('thread');
+            }}
+            onRefreshMessages={() => {
+              if (selectedConvId) void selectConversation(selectedConvId);
+            }}
             onBack={isMobile ? () => setMobileView('list') : undefined}
           />
         </section>

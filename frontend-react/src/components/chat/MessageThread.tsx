@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Avatar, Button, Input, Modal, ModalBody, ModalContent, Spinner, Textarea } from '@heroui/react';
+import { Avatar, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, Spinner, Textarea } from '@heroui/react';
 import {
   ArrowLeft,
+  ArrowsClockwise,
   CalendarBlank,
   CalendarCheck,
   ChatText,
@@ -11,6 +12,8 @@ import {
   Bell,
   BellSlash,
   IdentificationCard,
+  Image as ImageIcon,
+  Paperclip,
   PaperPlaneTilt,
   PhoneCall,
   Smiley,
@@ -18,6 +21,7 @@ import {
   VideoCamera,
   User,
   UsersThree,
+  X,
 } from '@phosphor-icons/react';
 import { api } from '../../api/client';
 import {
@@ -33,8 +37,12 @@ interface Props {
   sending: boolean;
   showContactPanel?: boolean;
   onSend: (content: string, opts?: import('../../hooks/use-chat').SendMessageOptions) => void;
+  onSendFiles?: (files: File[], caption?: string) => Promise<boolean>;
   onToggleContactPanel: () => void;
+  onOpenContactPanel?: () => void;
+  onOpenConversation?: (conversationId: string) => void;
   onBack?: () => void;
+  onRefreshMessages?: () => void;
 }
 
 function formatMessageTime(d: string): string {
@@ -91,6 +99,71 @@ function getImageUrl(msg: Message): string | null {
   return null;
 }
 
+/** Caption typed alongside an image — Zalo stores it in `title` of the image payload. */
+function getImageCaption(msg: Message): string | null {
+  if (msg.contentType !== 'image' || !msg.content?.startsWith('{')) return null;
+  try {
+    const p = JSON.parse(msg.content);
+    return typeof p.title === 'string' && p.title.trim() ? p.title.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Image with retry — Zalo's CDN can 404 for a few seconds right after upload,
+ * and a plain <img> never recovers from that first failure.
+ */
+function ChatImage({ src, onClick }: { src: string; onClick: () => void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const retryTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+    };
+  }, [src]);
+
+  if (failed) {
+    return (
+      <button
+        type="button"
+        className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-sm underline"
+        onClick={() => {
+          setFailed(false);
+          setAttempt((n) => n + 1);
+        }}
+      >
+        <ImageIcon size={18} /> Không tải được ảnh — bấm để thử lại
+      </button>
+    );
+  }
+
+  const url = attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}retry=${attempt}`;
+  return (
+    <img
+      src={url}
+      alt="Hình ảnh"
+      className="max-h-[300px] max-w-full cursor-pointer rounded-xl transition-transform hover:scale-[1.02]"
+      style={{ minWidth: 48, minHeight: 48 }}
+      onClick={onClick}
+      onError={() => {
+        if (attempt < 5) {
+          retryTimer.current = window.setTimeout(
+            () => setAttempt((n) => n + 1),
+            1500 * (attempt + 1),
+          );
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
+  );
+}
+
 /** Extract file info from JSON content (PDF, docs, etc.). */
 function getFileInfo(msg: Message): { name: string; size: string; href: string } | null {
   if (!msg.content?.startsWith('{')) return null;
@@ -107,6 +180,36 @@ function getFileInfo(msg: Message): { name: string; size: string; href: string }
     /* not JSON */
   }
   return null;
+}
+
+/** Extract playable video URL (+poster) from JSON content. */
+function getVideoInfo(msg: Message): { href: string; thumb: string | null } | null {
+  if (msg.contentType !== 'video' || !msg.content) return null;
+  if (msg.content.startsWith('http')) return { href: msg.content, thumb: null };
+  try {
+    const p = JSON.parse(msg.content);
+    if (p.href) return { href: p.href, thumb: p.thumb || null };
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
+/** Extract voice-message audio URL from JSON content. */
+function getVoiceUrl(msg: Message): string | null {
+  if (msg.contentType !== 'voice' || !msg.content) return null;
+  if (msg.content.startsWith('http')) return msg.content;
+  try {
+    const p = JSON.parse(msg.content);
+    return p.href || null;
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 interface CallInfo {
@@ -347,7 +450,60 @@ interface StickerItem {
   stickerUrl?: string | null;
 }
 
+interface ChatProfile {
+  uid: string | null;
+  name: string;
+  avatarUrl: string | null;
+  phone?: string | null;
+  kind: 'self' | 'contact' | 'group-member';
+}
+
+interface GroupMemberProfile {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+
 const DEFAULT_STICKER_CATE = 11901;
+
+function PendingFileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    setThumbUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const isVideo = file.type.startsWith('video/');
+  return (
+    <div className="relative flex items-center gap-2 rounded-xl border border-default bg-content2 p-1.5 pr-2">
+      {thumbUrl ? (
+        <img src={thumbUrl} alt={file.name} className="h-12 w-12 rounded-lg object-cover" />
+      ) : (
+        <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10">
+          {isVideo ? (
+            <VideoCamera size={22} className="text-primary" />
+          ) : (
+            <FileText size={22} className="text-primary" />
+          )}
+        </span>
+      )}
+      <div className="min-w-0 max-w-[140px]">
+        <div className="truncate text-xs font-medium">{file.name}</div>
+        <div className="text-[0.65rem] text-foreground-500">{formatBytes(file.size)}</div>
+      </div>
+      <button
+        type="button"
+        aria-label={`Bỏ ${file.name}`}
+        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-default-200 text-foreground-600 transition-colors hover:bg-danger hover:text-white"
+        onClick={onRemove}
+      >
+        <X size={12} weight="bold" />
+      </button>
+    </div>
+  );
+}
 
 function normalizeStickers(arr: any[]): StickerItem[] {
   return (Array.isArray(arr) ? arr : []).map((s: any) => ({
@@ -365,13 +521,62 @@ function MessageThread({
   sending,
   showContactPanel = false,
   onSend,
+  onSendFiles,
   onToggleContactPanel,
+  onOpenContactPanel,
+  onOpenConversation,
   onBack,
+  onRefreshMessages,
 }: Props) {
+  const groupSenderIds = Array.from(new Set(
+    messages
+      .filter((message) => message.senderType !== 'self' && message.senderUid)
+      .map((message) => String(message.senderUid).split('_')[0]),
+  ));
+  const groupSenderIdsKey = groupSenderIds.join(',');
   const [inputText, setInputText] = useState('');
   const [previewImageUrl, setPreviewImageUrl] = useState('');
+  const [selectedProfile, setSelectedProfile] = useState<ChatProfile | null>(null);
+  const [groupMembers, setGroupMembers] = useState<Record<string, GroupMemberProfile>>({});
+  const [openingPrivateChat, setOpeningPrivateChat] = useState(false);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [syncSnack, setSyncSnack] = useState({ show: false, text: '', color: 'success' });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    setPendingFiles([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    setGroupMembers({});
+    if (!conversation || conversation.threadType !== 'group') return () => {
+      active = false;
+      controller.abort();
+    };
+    api
+      .get(`/conversations/${conversation.id}/group-info`, {
+        params: { memberIds: groupSenderIdsKey || undefined },
+        signal: controller.signal,
+      })
+      .then((response) => {
+        if (!active) return;
+        const members = (response.data?.group?.members ?? []) as GroupMemberProfile[];
+        setGroupMembers(Object.fromEntries(members.map((member) => [String(member.id).replace(/_0$/, ''), member])));
+      })
+      .catch((err: any) => {
+        if (err?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
+        // Message bubbles still show initials when Zalo group info is unavailable.
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [conversation?.id, conversation?.threadType, groupSenderIdsKey]);
   const [muted, setMuted] = useState(false);
   useEffect(() => {
     setMuted(conversation ? isConversationMuted(conversation.id) : false);
@@ -470,14 +675,167 @@ function MessageThread({
     setMuted(next);
   }
 
+  const [syncing, setSyncing] = useState(false);
+  async function handleSyncMessages() {
+    if (!conversation || syncing) return;
+    setSyncing(true);
+    try {
+      const res = await api.post(`/conversations/${conversation.id}/sync-messages`, { count: 200 });
+      const d = res.data as { created?: number; fetched?: number };
+      setSyncSnack({
+        show: true,
+        text: `Đã đồng bộ ${d.created ?? 0} tin mới (quét ${d.fetched ?? 0} tin từ Zalo)`,
+        color: 'success',
+      });
+      onRefreshMessages?.();
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Đồng bộ thất bại, thử lại sau.';
+      setSyncSnack({ show: true, text: msg, color: 'warning' });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   function handleSend() {
+    if (pendingFiles.length > 0) {
+      void handleSendFiles();
+      return;
+    }
     if (!inputText.trim()) return;
     onSend(inputText);
     setInputText('');
   }
 
-  function openFile(url: string) {
-    window.open(url, '_blank');
+  const MAX_FILES = 10;
+  const MAX_FILE_SIZE = 100 * 1024 * 1024;
+
+  function addFiles(list: FileList | File[] | null) {
+    if (!list) return;
+    const incoming = Array.from(list).filter((f) => f.size > 0);
+    const oversized = incoming.filter((f) => f.size > MAX_FILE_SIZE);
+    if (oversized.length > 0) {
+      setSyncSnack({ show: true, text: `File quá lớn (tối đa 100MB): ${oversized[0].name}`, color: 'error' });
+    }
+    const valid = incoming.filter((f) => f.size <= MAX_FILE_SIZE);
+    if (valid.length === 0) return;
+    setPendingFiles((prev) => {
+      const next = [...prev, ...valid];
+      if (next.length > MAX_FILES) {
+        setSyncSnack({ show: true, text: `Tối đa ${MAX_FILES} file mỗi lần gửi`, color: 'warning' });
+      }
+      return next.slice(0, MAX_FILES);
+    });
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleSendFiles() {
+    if (!onSendFiles || pendingFiles.length === 0 || sending) return;
+    const files = pendingFiles;
+    const caption = inputText.trim();
+    const ok = await onSendFiles(files, caption || undefined);
+    if (ok) {
+      setPendingFiles([]);
+      setInputText('');
+    } else {
+      setSyncSnack({ show: true, text: 'Gửi file thất bại — thử lại sau', color: 'error' });
+    }
+  }
+
+  function handlePaste(e: React.ClipboardEvent) {
+    const items = e.clipboardData?.files;
+    if (items && items.length > 0) {
+      e.preventDefault();
+      addFiles(items);
+    }
+  }
+
+  async function downloadFile(messageId: string, file: { name: string; href: string }) {
+    if (downloadingFileId) return;
+    setDownloadingFileId(messageId);
+    try {
+      const response = await api.get(`/messages/${messageId}/download`, {
+        responseType: 'blob',
+        timeout: 180_000,
+      });
+      const blobUrl = URL.createObjectURL(response.data as Blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = file.name || 'zalo-file';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+      setSyncSnack({ show: true, text: `Đã tải ${file.name}`, color: 'success' });
+    } catch (err: any) {
+      let errorText = 'Không thể tải file';
+      const data = err?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          if (parsed?.error) errorText = parsed.error;
+        } catch {
+          // Keep the generic message for non-JSON upstream errors.
+        }
+      }
+      setSyncSnack({ show: true, text: errorText, color: 'error' });
+    } finally {
+      setDownloadingFileId(null);
+    }
+  }
+
+  function profileForMessage(msg: Message): ChatProfile {
+    if (msg.senderType === 'self') {
+      return {
+        uid: conversation?.zaloAccount?.zaloUid || msg.senderUid,
+        name: conversation?.zaloAccount?.displayName || msg.senderName || 'Bạn',
+        avatarUrl: conversation?.zaloAccount?.avatarUrl || null,
+        phone: conversation?.zaloAccount?.phone,
+        kind: 'self',
+      };
+    }
+    const uid = String(msg.senderUid || '').replace(/_0$/, '');
+    if (conversation?.threadType === 'group') {
+      const member = groupMembers[uid];
+      return {
+        uid: uid || null,
+        name: member?.displayName || msg.senderName || 'Thành viên',
+        avatarUrl: member?.avatarUrl || null,
+        kind: 'group-member',
+      };
+    }
+    return {
+      uid: uid || null,
+      name: conversation?.contact?.fullName || msg.senderName || 'Khách hàng',
+      avatarUrl: conversation?.contact?.avatarUrl || null,
+      phone: conversation?.contact?.phone,
+      kind: 'contact',
+    };
+  }
+
+  async function openPrivateChat(profile: ChatProfile) {
+    if (!conversation?.zaloAccount?.id || !profile.uid || openingPrivateChat) return;
+    setOpeningPrivateChat(true);
+    try {
+      const response = await api.post(
+        `/zalo-accounts/${conversation.zaloAccount.id}/conversations/for-user`,
+        { zaloUid: profile.uid },
+      );
+      const conversationId = response.data?.conversation?.id;
+      if (!conversationId) throw new Error('Missing conversation id');
+      setSelectedProfile(null);
+      onOpenConversation?.(conversationId);
+    } catch (err: any) {
+      setSyncSnack({
+        show: true,
+        text: err?.response?.data?.error || 'Không thể mở trò chuyện riêng',
+        color: 'error',
+      });
+    } finally {
+      setOpeningPrivateChat(false);
+    }
   }
 
   /** Sync Zalo reminder to CRM appointments via API. */
@@ -559,23 +917,66 @@ function MessageThread({
             <ArrowLeft size={20} />
           </Button>
         )}
-        <Avatar
-          src={conversation.threadType === 'group' ? undefined : conversation.contact?.avatarUrl ?? undefined}
-          icon={
-            conversation.threadType === 'group' ? <UsersThree size={18} /> : <User size={18} />
-          }
-          showFallback
-          size="sm"
-          className="bg-default-100 text-foreground-500"
-        />
-        <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          className="shrink-0 rounded-full transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          aria-label={conversation.threadType === 'group' ? 'Xem thông tin nhóm' : 'Xem thông tin liên hệ'}
+          onClick={() => {
+            if (conversation.threadType === 'group') {
+              onToggleContactPanel();
+            } else {
+              setSelectedProfile({
+                uid: conversation.contact?.zaloUid || null,
+                name: conversation.contact?.fullName || 'Khách hàng',
+                avatarUrl: conversation.contact?.avatarUrl || null,
+                phone: conversation.contact?.phone,
+                kind: 'contact',
+              });
+            }
+          }}
+        >
+          <Avatar
+            src={conversation.threadType === 'group' ? undefined : conversation.contact?.avatarUrl ?? undefined}
+            name={conversation.contact?.fullName || undefined}
+            icon={
+              conversation.threadType === 'group' ? <UsersThree size={18} /> : <User size={18} />
+            }
+            showFallback
+            size="sm"
+            className="bg-default-100 text-foreground-500"
+          />
+        </button>
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          onClick={() => conversation.threadType === 'group' ? onToggleContactPanel() : setSelectedProfile({
+            uid: conversation.contact?.zaloUid || null,
+            name: conversation.contact?.fullName || 'Khách hàng',
+            avatarUrl: conversation.contact?.avatarUrl || null,
+            phone: conversation.contact?.phone,
+            kind: 'contact',
+          })}
+        >
           <div className="truncate text-sm font-medium">
             {conversation.contact?.fullName || 'Unknown'}
           </div>
           <div className="truncate text-xs text-foreground-500">
             {conversation.zaloAccount?.displayName || 'Zalo'}
           </div>
-        </div>
+        </button>
+        {conversation.threadType === 'group' && (
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            isLoading={syncing}
+            aria-label="Đồng bộ tin nhắn từ Zalo"
+            title="Đồng bộ tối đa 200 tin nhắn nhóm gần nhất từ Zalo"
+            onPress={() => void handleSyncMessages()}
+          >
+            <ArrowsClockwise size={20} />
+          </Button>
+        )}
         <Button
           isIconOnly
           size="sm"
@@ -615,7 +1016,10 @@ function MessageThread({
           </div>
         )}
 
-        {messages.map((msg, idx) => (
+        {messages.map((msg, idx) => {
+          const profile = profileForMessage(msg);
+          const isSelf = msg.senderType === 'self';
+          return (
           <Fragment key={msg.id}>
             {isNewDay(idx > 0 ? messages[idx - 1].sentAt : undefined, msg.sentAt) && (
               <div className="my-3 flex justify-center">
@@ -625,11 +1029,34 @@ function MessageThread({
               </div>
             )}
           <div
-            className={`mb-2 flex ${msg.senderType === 'self' ? 'justify-end' : 'justify-start'}`}
+            className={`mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
           >
+            {!isSelf && (
+              <button
+                type="button"
+                className="mb-0.5 shrink-0 rounded-full transition-transform hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                aria-label={`Mở liên hệ ${profile.name}`}
+                title={`Mở liên hệ ${profile.name}`}
+                onClick={() => setSelectedProfile(profile)}
+              >
+                <Avatar
+                  size="sm"
+                  src={profile.avatarUrl || undefined}
+                  name={profile.name}
+                  showFallback
+                  className="h-8 w-8 bg-default-100 text-xs"
+                />
+              </button>
+            )}
             <div style={{ maxWidth: '70%' }} title={`${formatMessageTime(msg.sentAt)}, ${formatDayDivider(msg.sentAt)}`}>
               {conversation.threadType === 'group' && msg.senderType !== 'self' && (
-                <div className="mb-1 text-xs font-medium text-primary">{msg.senderName || 'Unknown'}</div>
+                <button
+                  type="button"
+                  className="mb-1 block max-w-full truncate text-left text-xs font-medium text-primary hover:underline"
+                  onClick={() => setSelectedProfile(profile)}
+                >
+                  {profile.name}
+                </button>
               )}
               <div
                 className={`chat-message-bubble px-3 py-2 text-sm ${
@@ -645,13 +1072,26 @@ function MessageThread({
                     {msg.content || '(tin nhắn)'}
                     <span className="text-xs"> (đã thu hồi)</span>
                   </div>
-                ) : getImageUrl(msg) ? (
-                  <img
-                    src={getImageUrl(msg)!}
-                    alt="Hình ảnh"
-                    className="max-h-[300px] max-w-full cursor-pointer rounded-xl transition-transform hover:scale-[1.02]"
-                    onClick={() => setPreviewImageUrl(getImageUrl(msg)!)}
+                ) : getVideoInfo(msg) ? (
+                  <video
+                    src={getVideoInfo(msg)!.href}
+                    poster={getVideoInfo(msg)!.thumb ?? undefined}
+                    controls
+                    preload="metadata"
+                    className="max-h-[300px] max-w-full rounded-xl"
                   />
+                ) : getVoiceUrl(msg) ? (
+                  <audio src={getVoiceUrl(msg)!} controls preload="metadata" className="max-w-full" />
+                ) : getImageUrl(msg) ? (
+                  <div>
+                    <ChatImage
+                      src={getImageUrl(msg)!}
+                      onClick={() => setPreviewImageUrl(getImageUrl(msg)!)}
+                    />
+                    {getImageCaption(msg) && (
+                      <div className="mt-1 whitespace-pre-wrap">{getImageCaption(msg)}</div>
+                    )}
+                  </div>
                 ) : getFileInfo(msg) ? (
                   <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2">
                     <FileText size={20} className="text-primary" />
@@ -664,8 +1104,9 @@ function MessageThread({
                         isIconOnly
                         size="sm"
                         variant="light"
+                        isLoading={downloadingFileId === msg.id}
                         aria-label="Tải xuống"
-                        onPress={() => openFile(getFileInfo(msg)!.href)}
+                        onPress={() => void downloadFile(msg.id, getFileInfo(msg)!)}
                       >
                         <DownloadSimple size={16} />
                       </Button>
@@ -719,9 +1160,28 @@ function MessageThread({
                 </div>
               </div>
             </div>
+            {isSelf && (
+              <button
+                type="button"
+                className="mb-0.5 shrink-0 rounded-full transition-transform hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                aria-label="Xem tài khoản gửi tin"
+                title="Tài khoản gửi tin"
+                onClick={() => setSelectedProfile(profile)}
+              >
+                <Avatar
+                  size="sm"
+                  src={profile.avatarUrl || undefined}
+                  name={profile.name}
+                  showFallback
+                  color="primary"
+                  className="h-8 w-8 text-xs"
+                />
+              </button>
+            )}
           </div>
           </Fragment>
-        ))}
+          );
+        })}
 
         {!loading && messages.length === 0 && (
           <div className="py-8 text-center text-foreground-500">Chưa có tin nhắn</div>
@@ -743,17 +1203,52 @@ function MessageThread({
         </div>
       )}
 
+      {/* Pending attachments strip */}
+      {pendingFiles.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-default bg-content1 px-3 py-2">
+          {pendingFiles.map((file, index) => (
+            <PendingFileChip
+              key={`${file.name}-${file.size}-${index}`}
+              file={file}
+              onRemove={() => removePendingFile(index)}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Input */}
       <div className="chat-toolbar chat-toolbar--composer relative flex items-end gap-2 border-t border-default p-2">
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif,video/mp4"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            addFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            addFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
         <Textarea
           id="chat-message-input"
-          placeholder="Nhập tin nhắn..."
+          placeholder={pendingFiles.length > 0 ? 'Thêm chú thích (tuỳ chọn)...' : 'Nhập tin nhắn...'}
           value={inputText}
           onValueChange={setInputText}
           minRows={1}
           maxRows={3}
           variant="bordered"
           className="flex-1"
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -762,6 +1257,24 @@ function MessageThread({
           }}
         />
         <div className="flex items-center gap-1 pb-1">
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            aria-label="Gửi hình ảnh hoặc video"
+            onPress={() => imageInputRef.current?.click()}
+          >
+            <ImageIcon size={18} />
+          </Button>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            aria-label="Đính kèm file"
+            onPress={() => fileInputRef.current?.click()}
+          >
+            <Paperclip size={18} />
+          </Button>
           <Button
             isIconOnly
             size="sm"
@@ -787,7 +1300,7 @@ function MessageThread({
           isIconOnly
           color="primary"
           isLoading={sending}
-          isDisabled={!inputText.trim()}
+          isDisabled={!inputText.trim() && pendingFiles.length === 0}
           aria-label="Gửi"
           onPress={handleSend}
         >
@@ -928,6 +1441,78 @@ function MessageThread({
           </div>
         )}
       </div>
+
+      {/* Clickable sender / recipient profile */}
+      <Modal
+        isOpen={Boolean(selectedProfile)}
+        onOpenChange={(open) => !open && setSelectedProfile(null)}
+        size="sm"
+        placement="center"
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalBody className="items-center px-5 pb-2 pt-6 text-center">
+                <Avatar
+                  src={selectedProfile?.avatarUrl || undefined}
+                  name={selectedProfile?.name || '?'}
+                  showFallback
+                  isBordered
+                  color="primary"
+                  className="h-24 w-24 text-2xl"
+                />
+                <div>
+                  <div className="text-lg font-semibold">{selectedProfile?.name}</div>
+                  <div className="text-sm text-foreground-500">
+                    {selectedProfile?.kind === 'self'
+                      ? 'Tài khoản Zalo đang gửi tin'
+                      : selectedProfile?.kind === 'group-member'
+                        ? 'Thành viên nhóm Zalo'
+                        : selectedProfile?.phone || 'Liên hệ Zalo'}
+                  </div>
+                </div>
+              </ModalBody>
+              <ModalFooter className="justify-center">
+                <Button variant="light" onPress={onClose}>Đóng</Button>
+                {selectedProfile?.kind === 'contact' && (
+                  <>
+                    {selectedProfile.phone && (
+                      <Button
+                        variant="flat"
+                        color="success"
+                        startContent={<PhoneCall size={17} />}
+                        onPress={() => { window.location.href = `tel:${selectedProfile.phone}`; }}
+                      >
+                        Gọi điện
+                      </Button>
+                    )}
+                    <Button
+                      color="primary"
+                      startContent={<IdentificationCard size={17} />}
+                      onPress={() => {
+                        onClose();
+                        onOpenContactPanel?.();
+                      }}
+                    >
+                      Xem liên hệ
+                    </Button>
+                  </>
+                )}
+                {selectedProfile?.kind === 'group-member' && selectedProfile.uid && (
+                  <Button
+                    color="primary"
+                    isLoading={openingPrivateChat}
+                    startContent={<ChatText size={17} />}
+                    onPress={() => void openPrivateChat(selectedProfile)}
+                  >
+                    Nhắn tin riêng
+                  </Button>
+                )}
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
 
       {/* Image preview dialog */}
       <Modal isOpen={Boolean(previewImageUrl)} onOpenChange={(open) => !open && setPreviewImageUrl('')} size="2xl">

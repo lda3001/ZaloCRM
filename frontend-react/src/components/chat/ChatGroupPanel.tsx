@@ -31,6 +31,9 @@ interface Props {
   onClose: () => void;
 }
 
+const GROUP_INFO_CACHE_MS = 60_000;
+const groupInfoCache = new Map<string, { data: GroupInfo; cachedAt: number }>();
+
 function formatCreatedAt(value: number | null): string {
   if (!value) return '';
   const timestamp = value < 1_000_000_000_000 ? value * 1000 : value;
@@ -43,19 +46,41 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [memberSearch, setMemberSearch] = useState('');
+  const [visibleMemberCount, setVisibleMemberCount] = useState(60);
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
+    const cached = groupInfoCache.get(conversation.id);
+    if (cached && Date.now() - cached.cachedAt < GROUP_INFO_CACHE_MS) {
+      setGroup(cached.data);
+      setLoading(false);
+      setError('');
+      setMemberSearch('');
+      setVisibleMemberCount(60);
+      return () => {
+        active = false;
+        controller.abort();
+      };
+    }
     setLoading(true);
     setError('');
     setMemberSearch('');
+    setVisibleMemberCount(60);
     api
-      .get(`/conversations/${conversation.id}/group-info`)
+      .get(`/conversations/${conversation.id}/group-info`, { signal: controller.signal })
       .then((response) => {
-        if (active) setGroup(response.data.group);
+        if (active) {
+          setGroup(response.data.group);
+          groupInfoCache.set(conversation.id, {
+            data: response.data.group,
+            cachedAt: Date.now(),
+          });
+        }
       })
       .catch((requestError) => {
         if (!active) return;
+        if (requestError?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
         setError(requestError?.response?.data?.error || 'Không tải được thông tin nhóm');
       })
       .finally(() => {
@@ -63,6 +88,7 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
       });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [conversation.id]);
 
@@ -78,6 +104,7 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
       `${member.displayName} ${member.zaloName || ''}`.toLocaleLowerCase('vi').includes(keyword),
     );
   }, [group?.members, memberSearch]);
+  const visibleMembers = members.slice(0, visibleMemberCount);
 
   const fallbackName = conversation.contact?.fullName || 'Nhóm Zalo';
 
@@ -144,13 +171,16 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
               variant="bordered"
               placeholder="Tìm thành viên..."
               value={memberSearch}
-              onValueChange={setMemberSearch}
+              onValueChange={(value) => {
+                setMemberSearch(value);
+                setVisibleMemberCount(60);
+              }}
               startContent={<MagnifyingGlass size={15} />}
               isClearable
               onClear={() => setMemberSearch('')}
             />
             <div className="space-y-1">
-              {members.map((member) => {
+              {visibleMembers.map((member) => {
                 const isSelf = member.id === conversation.zaloAccount?.zaloUid;
                 return (
                   <div key={member.id} className="flex items-center gap-2 rounded-xl px-2 py-2 hover:bg-default-100">
@@ -186,6 +216,16 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
                 <div className="py-8 text-center text-sm text-foreground-500">
                   Không tìm thấy thành viên
                 </div>
+              )}
+              {visibleMembers.length < members.length && (
+                <Button
+                  size="sm"
+                  variant="flat"
+                  className="mt-2 w-full"
+                  onPress={() => setVisibleMemberCount((count) => count + 100)}
+                >
+                  Xem thêm {Math.min(100, members.length - visibleMembers.length)} thành viên
+                </Button>
               )}
             </div>
           </div>

@@ -25,13 +25,6 @@
       "preload.cjs",
       "package.json"
     ],
-    "extraResources": [
-      { "from": "../backend/dist", "to": "backend/dist" },
-      { "from": "../backend/node_modules", "to": "backend/node_modules" },
-      { "from": "../backend/prisma", "to": "backend/prisma" },
-      { "from": "../backend/package.json", "to": "backend/package.json" },
-      { "from": "../frontend-react/dist", "to": "backend/static" }
-    ],
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] }

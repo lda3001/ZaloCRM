@@ -250,7 +250,8 @@ Kiểm tra trạng thái Zalo (phải xanh lá). Nếu hiện "Gửi quá nhanh"
 
 ### "Không thấy tin nhắn cũ?"
 
-Hệ thống chỉ lưu tin nhắn từ lúc kết nối Zalo. Tin nhắn trước đó không có.
+- **Chat cá nhân:** hệ thống lưu tin nhắn realtime từ lúc tài khoản Zalo kết nối; Zalo không cung cấp API lấy lịch sử cũ cho chat 1-1.
+- **Chat nhóm:** mở hội thoại và nhấn biểu tượng **đồng bộ** (↻) trên thanh tiêu đề để lấy tối đa 200 tin nhắn nhóm gần nhất. Tin đã có sẽ tự động được bỏ qua.
 
 ### "Lịch hẹn bị trùng?"
 
