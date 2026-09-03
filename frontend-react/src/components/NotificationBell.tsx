@@ -10,6 +10,7 @@ import {
 } from '@heroui/react';
 import { Bell, Info, Warning, WarningCircle } from '@phosphor-icons/react';
 import { api } from '../api/client';
+import { openChatConversation } from '../utils/desktop-notify';
 
 interface Notification {
   id: string;
@@ -17,6 +18,7 @@ interface Notification {
   title: string;
   detail: string;
   priority: string;
+  conversationId?: string;
 }
 
 function notificationIcon(type: string) {
@@ -49,7 +51,11 @@ export default function NotificationBell() {
   }, []);
 
   function handleClick(id: string) {
-    if (id === 'unreplied') navigate('/chat');
+    if (id === 'unreplied') {
+      const conversationId = notifications.find((n) => n.id === id)?.conversationId;
+      if (conversationId) openChatConversation(conversationId);
+      else navigate('/chat');
+    }
     else if (id.startsWith('apt-')) navigate('/appointments');
     else if (id.startsWith('zalo-')) navigate('/zalo-accounts');
     else if (id === 'tmr-apts') navigate('/appointments');

@@ -31,8 +31,9 @@ Với bản đã cài, có thể đặt `.env` cạnh `ZaloCRM.exe` hoặc tại
 %APPDATA%\ZaloCRM\.env
 ```
 
-Chỉ `BACKEND_URL` thuộc cấu hình desktop. `DATABASE_URL`, `JWT_SECRET`, phiên
-Zalo và thư mục upload phải nằm trong cấu hình của backend.
+Chỉ `BACKEND_URL` thuộc cấu hình desktop. `APP_URL`, `DATABASE_URL`,
+`JWT_SECRET`, phiên Zalo và thư mục upload phải nằm trong cấu hình của backend
+và không được desktop dùng để chọn máy chủ.
 
 ## Build và chạy backend riêng
 

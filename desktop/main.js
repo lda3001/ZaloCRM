@@ -11,8 +11,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_BACKEND_URL = 'http://127.0.0.1:3001';
-const HEALTH_TIMEOUT_MS = 15_000;
+const DEFAULT_BACKEND_URL = 'https://zalocrm-m3f5.onrender.com';
+const HEALTH_TIMEOUT_MS = 90_000;
 const HEALTH_POLL_MS = 500;
 const HTTP_PROBE_TIMEOUT_MS = 2_000;
 
@@ -181,7 +181,7 @@ process.on('SIGTERM', () => app.quit());
 async function boot() {
   const fileEnv = loadEnvFile();
   backendUrl = normalizeHttpUrl(
-    fileEnv.BACKEND_URL || fileEnv.APP_URL,
+    fileEnv.BACKEND_URL,
     DEFAULT_BACKEND_URL,
   );
   const isDev = !app.isPackaged

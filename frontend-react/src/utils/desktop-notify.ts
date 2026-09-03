@@ -120,6 +120,16 @@ interface DesktopBridgeWindow extends Window {
   };
 }
 
+/** Ask the app shell to navigate to and display one conversation. */
+export function openChatConversation(conversationId: string): void {
+  try {
+    sessionStorage.setItem(PENDING_CONV_KEY, conversationId);
+  } catch {
+    // Ignore storage errors.
+  }
+  window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: { conversationId } }));
+}
+
 /**
  * Show a desktop notification for an incoming message. Notifications for the
  * same conversation are coalesced (one visible toast at a time).
@@ -138,12 +148,7 @@ export function notifyIncomingMessage(opts: IncomingMessageNotification): void {
       n.close();
       (window as DesktopBridgeWindow).zaloCRMDesktop?.showMainWindow();
       window.focus();
-      try {
-        sessionStorage.setItem(PENDING_CONV_KEY, opts.conversationId);
-      } catch {
-        // Ignore storage errors.
-      }
-      window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: { conversationId: opts.conversationId } }));
+      openChatConversation(opts.conversationId);
     };
   } catch {
     // Some environments disallow constructing notifications — ignore.

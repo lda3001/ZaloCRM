@@ -14,6 +14,7 @@ interface NotificationItem {
   detail: string;
   priority: string;
   createdAt: string;
+  conversationId?: string;
 }
 
 export async function notificationRoutes(app: FastifyInstance) {
@@ -25,9 +26,19 @@ export async function notificationRoutes(app: FastifyInstance) {
 
     // 1. Unreplied conversations > 30 min
     const thirtyMinAgo = new Date(Date.now() - 30 * 60000);
-    const unreplied = await prisma.conversation.count({
-      where: { orgId: user.orgId, isReplied: false, lastMessageAt: { lt: thirtyMinAgo } },
-    });
+    const unrepliedWhere = {
+      orgId: user.orgId,
+      isReplied: false,
+      lastMessageAt: { lt: thirtyMinAgo },
+    };
+    const [unreplied, latestUnreplied] = await Promise.all([
+      prisma.conversation.count({ where: unrepliedWhere }),
+      prisma.conversation.findFirst({
+        where: unrepliedWhere,
+        orderBy: { lastMessageAt: 'desc' },
+        select: { id: true, lastMessageAt: true },
+      }),
+    ]);
     if (unreplied > 0) {
       notifications.push({
         id: 'unreplied',
@@ -35,7 +46,8 @@ export async function notificationRoutes(app: FastifyInstance) {
         priority: 'high',
         title: `${unreplied} cuộc trò chuyện chưa trả lời`,
         detail: 'Có tin nhắn chưa phản hồi quá 30 phút',
-        createdAt: new Date().toISOString(),
+        createdAt: (latestUnreplied?.lastMessageAt ?? new Date()).toISOString(),
+        conversationId: latestUnreplied?.id,
       });
     }
 
