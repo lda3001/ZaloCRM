@@ -14,6 +14,27 @@ import type { Server } from 'socket.io';
 
 type QueryParams = Record<string, string>;
 
+const GROUP_INFO_CACHE_TTL_MS = 10 * 60_000;
+const GROUP_INFO_CACHE_MAX_ENTRIES = 300;
+const groupInfoCache = new Map<string, { payload: any; cachedAt: number }>();
+
+function groupInfoCacheKey(conversationId: string, requestedMemberIds: string): string {
+  const memberKey = Array.from(new Set(
+    requestedMemberIds.split(',').map((value) => value.split('_')[0]).filter(Boolean),
+  )).sort().join(',');
+  return `${conversationId}:${memberKey || '*'}`;
+}
+
+function rememberGroupInfo(key: string, payload: any): void {
+  groupInfoCache.delete(key);
+  groupInfoCache.set(key, { payload, cachedAt: Date.now() });
+  while (groupInfoCache.size > GROUP_INFO_CACHE_MAX_ENTRIES) {
+    const oldestKey = groupInfoCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    groupInfoCache.delete(oldestKey);
+  }
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
@@ -91,7 +112,7 @@ export async function chatRoutes(app: FastifyInstance) {
   app.get('/api/v1/conversations/:id/group-info', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { memberIds: requestedMemberIds = '' } = request.query as QueryParams;
+    const { memberIds: requestedMemberIds = '', force = '' } = request.query as QueryParams;
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId, threadType: 'group' },
       select: {
@@ -105,8 +126,16 @@ export async function chatRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Group conversation not found' });
     }
 
+    const cacheKey = groupInfoCacheKey(id, requestedMemberIds);
+    const cached = groupInfoCache.get(cacheKey);
+    const cacheAge = cached ? Date.now() - cached.cachedAt : Number.POSITIVE_INFINITY;
+    if (force !== '1' && cached && cacheAge < GROUP_INFO_CACHE_TTL_MS) {
+      return { ...cached.payload, cached: true };
+    }
+
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) {
+      if (cached) return { ...cached.payload, cached: true, stale: true };
       return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
     }
 
@@ -178,7 +207,7 @@ export async function chatRoutes(app: FastifyInstance) {
         };
       });
 
-      return {
+      const payload = {
         group: {
           id: group.groupId || conversation.externalThreadId,
           name: group.name || conversation.contact?.fullName || 'Nhóm',
@@ -192,8 +221,11 @@ export async function chatRoutes(app: FastifyInstance) {
           members,
         },
       };
+      rememberGroupInfo(cacheKey, payload);
+      return payload;
     } catch (err) {
       logger.error('[chat] get group info error:', err);
+      if (cached) return { ...cached.payload, cached: true, stale: true };
       return reply.status(502).send({ error: 'Không tải được thông tin nhóm' });
     }
   });

@@ -1,38 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Avatar, Button, Chip, Input, Spinner } from '@heroui/react';
-import { Crown, MagnifyingGlass, ShieldCheck, UsersThree, X } from '@phosphor-icons/react';
-import { api } from '../../api/client';
+import { ArrowsClockwise, Crown, MagnifyingGlass, ShieldCheck, UsersThree, X } from '@phosphor-icons/react';
 import type { Conversation } from '../../hooks/use-chat';
-
-interface GroupMember {
-  id: string;
-  displayName: string;
-  zaloName: string | null;
-  avatarUrl: string | null;
-  isAdmin: boolean;
-  isCreator: boolean;
-}
-
-interface GroupInfo {
-  id: string;
-  name: string;
-  description: string;
-  avatarUrl: string | null;
-  type: 'group' | 'community';
-  creatorId: string | null;
-  memberCount: number;
-  maxMember: number | null;
-  createdAt: number | null;
-  members: GroupMember[];
-}
+import { getGroupInfoCached, type GroupInfo } from '../../services/group-info-cache';
 
 interface Props {
   conversation: Conversation;
   onClose: () => void;
 }
-
-const GROUP_INFO_CACHE_MS = 60_000;
-const groupInfoCache = new Map<string, { data: GroupInfo; cachedAt: number }>();
 
 function formatCreatedAt(value: number | null): string {
   if (!value) return '';
@@ -50,37 +25,18 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
 
   useEffect(() => {
     let active = true;
-    const controller = new AbortController();
-    const cached = groupInfoCache.get(conversation.id);
-    if (cached && Date.now() - cached.cachedAt < GROUP_INFO_CACHE_MS) {
-      setGroup(cached.data);
-      setLoading(false);
-      setError('');
-      setMemberSearch('');
-      setVisibleMemberCount(60);
-      return () => {
-        active = false;
-        controller.abort();
-      };
-    }
     setLoading(true);
     setError('');
     setMemberSearch('');
     setVisibleMemberCount(60);
-    api
-      .get(`/conversations/${conversation.id}/group-info`, { signal: controller.signal })
-      .then((response) => {
+    getGroupInfoCached(conversation.id)
+      .then((data) => {
         if (active) {
-          setGroup(response.data.group);
-          groupInfoCache.set(conversation.id, {
-            data: response.data.group,
-            cachedAt: Date.now(),
-          });
+          setGroup(data);
         }
       })
       .catch((requestError) => {
         if (!active) return;
-        if (requestError?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
         setError(requestError?.response?.data?.error || 'Không tải được thông tin nhóm');
       })
       .finally(() => {
@@ -88,9 +44,20 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
       });
     return () => {
       active = false;
-      controller.abort();
     };
   }, [conversation.id]);
+
+  async function refreshGroup() {
+    setLoading(true);
+    setError('');
+    try {
+      setGroup(await getGroupInfoCached(conversation.id, { force: true }));
+    } catch (requestError: any) {
+      setError(requestError?.response?.data?.error || 'Không tải được thông tin nhóm');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const members = useMemo(() => {
     const keyword = memberSearch.trim().toLocaleLowerCase('vi');
@@ -113,7 +80,19 @@ export default function ChatGroupPanel({ conversation, onClose }: Props) {
       <div className="chat-panel-header flex items-center gap-2 border-b border-default px-3 py-2">
         <UsersThree size={20} className="text-primary" />
         <span className="text-sm font-medium">Thông tin nhóm</span>
-        <Button isIconOnly size="sm" variant="light" aria-label="Đóng" className="ml-auto" onPress={onClose}>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="light"
+          aria-label="Làm mới thông tin nhóm"
+          title="Làm mới thông tin nhóm"
+          isLoading={loading}
+          className="ml-auto"
+          onPress={() => void refreshGroup()}
+        >
+          <ArrowsClockwise size={17} />
+        </Button>
+        <Button isIconOnly size="sm" variant="light" aria-label="Đóng" onPress={onClose}>
           <X size={18} />
         </Button>
       </div>

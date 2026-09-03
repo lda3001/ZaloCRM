@@ -29,6 +29,7 @@ import {
   setConversationMuted,
 } from '../../utils/desktop-notify';
 import type { Conversation, Message } from '../../hooks/use-chat';
+import { getGroupInfoCached } from '../../services/group-info-cache';
 
 interface Props {
   conversation: Conversation | null;
@@ -538,6 +539,7 @@ function MessageThread({
   const [previewImageUrl, setPreviewImageUrl] = useState('');
   const [selectedProfile, setSelectedProfile] = useState<ChatProfile | null>(null);
   const [groupMembers, setGroupMembers] = useState<Record<string, GroupMemberProfile>>({});
+  const groupMembersRef = useRef<Record<string, GroupMemberProfile>>({});
   const [openingPrivateChat, setOpeningPrivateChat] = useState(false);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [syncSnack, setSyncSnack] = useState({ show: false, text: '', color: 'success' });
@@ -551,30 +553,36 @@ function MessageThread({
   }, [conversation?.id]);
 
   useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
+    groupMembersRef.current = {};
     setGroupMembers({});
-    if (!conversation || conversation.threadType !== 'group') return () => {
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    let active = true;
+    if (!conversation || conversation.threadType !== 'group' || groupSenderIds.length === 0) {
+      return () => {
+        active = false;
+      };
+    }
+    const missingIds = groupSenderIds.filter((id) => !groupMembersRef.current[id]);
+    if (missingIds.length === 0) return () => {
       active = false;
-      controller.abort();
     };
-    api
-      .get(`/conversations/${conversation.id}/group-info`, {
-        params: { memberIds: groupSenderIdsKey || undefined },
-        signal: controller.signal,
-      })
-      .then((response) => {
+    getGroupInfoCached(conversation.id, { memberIds: missingIds })
+      .then((group) => {
         if (!active) return;
-        const members = (response.data?.group?.members ?? []) as GroupMemberProfile[];
-        setGroupMembers(Object.fromEntries(members.map((member) => [String(member.id).replace(/_0$/, ''), member])));
+        const members = group.members as GroupMemberProfile[];
+        const next = Object.fromEntries(
+          members.map((member) => [String(member.id).replace(/_0$/, ''), member]),
+        );
+        groupMembersRef.current = { ...groupMembersRef.current, ...next };
+        setGroupMembers(groupMembersRef.current);
       })
-      .catch((err: any) => {
-        if (err?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
+      .catch(() => {
         // Message bubbles still show initials when Zalo group info is unavailable.
       });
     return () => {
       active = false;
-      controller.abort();
     };
   }, [conversation?.id, conversation?.threadType, groupSenderIdsKey]);
   const [muted, setMuted] = useState(false);
