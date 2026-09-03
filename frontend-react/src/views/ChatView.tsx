@@ -18,7 +18,7 @@ function readWidth(key: string, fallback: number): number {
 }
 
 export default function ChatView() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     conversations,
     selectedConvId,
@@ -117,9 +117,12 @@ export default function ChatView() {
   }, [selectConversation, isMobile]);
 
   // Open a conversation passed by navigation. Session storage remains a
-  // fallback for desktop-notification environments that drop URL state.
+  // fallback for desktop-notification environments that drop URL state. The
+  // query parameter is consumed once; leaving it in the URL would reopen the
+  // notification conversation whenever the user selects a different chat.
   useEffect(() => {
-    let pending = searchParams.get('conversation');
+    const queryConversation = searchParams.get('conversation');
+    let pending = queryConversation;
     try {
       pending ||= sessionStorage.getItem(PENDING_CONV_KEY);
       if (pending) sessionStorage.removeItem(PENDING_CONV_KEY);
@@ -127,10 +130,15 @@ export default function ChatView() {
       // Ignore storage errors.
     }
     if (pending) {
-      if (pending !== selectedConvId) void selectConversation(pending);
+      void selectConversation(pending);
       if (isMobile) setMobileView('thread');
     }
-  }, [searchParams, selectConversation, selectedConvId, isMobile]);
+    if (queryConversation) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('conversation');
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams, selectConversation, isMobile]);
 
   // Debounced search (300ms), mirroring the Vue watch on searchQuery.
   const firstSearchRun = useRef(true);
