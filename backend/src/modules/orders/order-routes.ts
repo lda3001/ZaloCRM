@@ -28,12 +28,20 @@ export async function orderRoutes(app: FastifyInstance) {
       status = '',
       contactId = '',
       createdByUserId = '',
+      search = '',
     } = request.query as Record<string, string>;
 
     const where: any = { orgId: user.orgId };
     if (status) where.status = status;
     if (contactId) where.contactId = contactId;
     if (createdByUserId) where.createdByUserId = createdByUserId;
+    if (search.trim()) {
+      where.OR = [
+        { orderCode: { contains: search.trim(), mode: 'insensitive' } },
+        { contact: { fullName: { contains: search.trim(), mode: 'insensitive' } } },
+        { contact: { phone: { contains: search.trim() } } },
+      ];
+    }
 
     const [orders, total] = await Promise.all([
       prisma.order.findMany({
@@ -86,8 +94,15 @@ export async function orderRoutes(app: FastifyInstance) {
 
   // Update order (totalAmount, status, notes)
   app.put('/api/v1/orders/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
     const { id } = request.params as { id: string };
     const body = request.body as any;
+
+    const existing = await prisma.order.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { id: true },
+    });
+    if (!existing) return reply.status(404).send({ error: 'Order not found' });
 
     const updateData: any = {};
     if (body.totalAmount !== undefined) updateData.totalAmount = parseFloat(body.totalAmount);
@@ -107,8 +122,14 @@ export async function orderRoutes(app: FastifyInstance) {
   });
 
   // Delete order
-  app.delete('/api/v1/orders/:id', async (request: FastifyRequest) => {
+  app.delete('/api/v1/orders/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
     const { id } = request.params as { id: string };
+    const existing = await prisma.order.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { id: true },
+    });
+    if (!existing) return reply.status(404).send({ error: 'Order not found' });
     await prisma.order.delete({ where: { id } });
     return { success: true };
   });

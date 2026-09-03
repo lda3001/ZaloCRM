@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Card, CardBody, Divider, Input, Spinner } from '@heroui/react';
 import { CalendarCheck, ChatText, MagnifyingGlass, User } from '@phosphor-icons/react';
 import { api } from '../api/client';
+import { openChatConversation } from '../utils/desktop-notify';
 
 interface ContactResult {
   id: string;
@@ -85,6 +86,14 @@ export default function GlobalSearch() {
     navigate(path);
   }
 
+  function goToMessage(result: MessageResult) {
+    setShowResults(false);
+    setQuery('');
+    const conversationId = result.conversation?.id;
+    if (conversationId) openChatConversation(conversationId);
+    else navigate('/chat');
+  }
+
   function truncate(s: string | null, len: number): string {
     return s && s.length > len ? s.slice(0, len) + '...' : s || '';
   }
@@ -125,7 +134,7 @@ export default function GlobalSearch() {
                         <button
                           key={c.id}
                           type="button"
-                          onClick={() => goTo('/contacts')}
+                          onClick={() => goTo(`/contacts?contact=${encodeURIComponent(c.id)}`)}
                           className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-default-100"
                         >
                           <User size={18} className="mt-0.5 shrink-0 text-primary" />
@@ -154,7 +163,7 @@ export default function GlobalSearch() {
                         <button
                           key={m.id}
                           type="button"
-                          onClick={() => goTo('/chat')}
+                          onClick={() => goToMessage(m)}
                           className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-default-100"
                         >
                           <ChatText size={18} className="mt-0.5 shrink-0 text-primary" />
@@ -181,7 +190,7 @@ export default function GlobalSearch() {
                         <button
                           key={a.id}
                           type="button"
-                          onClick={() => goTo('/appointments')}
+                          onClick={() => goTo(`/appointments?appointment=${encodeURIComponent(a.id)}`)}
                           className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-default-100"
                         >
                           <CalendarCheck size={18} className="mt-0.5 shrink-0 text-warning" />

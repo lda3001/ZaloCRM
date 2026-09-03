@@ -9,7 +9,7 @@ export interface ZaloAccount {
   status: string;
   liveStatus?: string;
   phone: string | null;
-  sessionData: unknown;
+  hasSession: boolean;
   ownerUserId: string;
   createdAt: string;
 }

@@ -20,6 +20,8 @@ export interface AppointmentFilters {
   contactId: string;
 }
 
+type AppointmentListParams = Partial<AppointmentFilters> & { page?: number; limit?: number };
+
 export const APPOINTMENT_STATUS_OPTIONS = [
   { text: 'Đã lên lịch', value: 'scheduled' },
   { text: 'Hoàn thành', value: 'completed' },
@@ -61,7 +63,7 @@ export function useAppointments() {
   });
 
   const fetchAppointments = useCallback(
-    async (params?: Partial<AppointmentFilters>) => {
+    async (params?: AppointmentListParams) => {
       const merged = { ...filters, ...params };
       setLoading(true);
       setError(null);
@@ -72,6 +74,8 @@ export function useAppointments() {
             dateTo: merged.to || undefined,
             status: merged.status || undefined,
             contactId: merged.contactId || undefined,
+            page: merged.page ?? 1,
+            limit: merged.limit ?? 50,
           },
         });
         const list = res.data.appointments ?? res.data;

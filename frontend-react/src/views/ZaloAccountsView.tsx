@@ -211,7 +211,7 @@ export default function ZaloAccountsView() {
                       <QrCode size={16} />
                     </Button>
                   )}
-                  {item.liveStatus === 'disconnected' && Boolean(item.sessionData) && (
+                  {item.liveStatus === 'disconnected' && item.hasSession && (
                     <Button
                       isIconOnly
                       size="sm"

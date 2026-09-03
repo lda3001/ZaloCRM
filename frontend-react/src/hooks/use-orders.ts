@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { api } from '../api/client';
 
 export interface Order {
@@ -50,19 +50,25 @@ export function useOrders() {
   const [stats, setStats] = useState<OrderStats | null>(null);
   const [staffStats, setStaffStats] = useState<StaffStat[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const listRequestRef = useRef(0);
 
   const fetchOrders = useCallback(async (params: Record<string, string> = {}) => {
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await api.get('/orders', { params });
-      setOrders(res.data.orders ?? []);
-      setTotal(res.data.total ?? 0);
+      if (requestId === listRequestRef.current) {
+        setOrders(res.data.orders ?? []);
+        setTotal(res.data.total ?? 0);
+      }
     } catch (err) {
       console.error('Failed to fetch orders:', err);
-      setError('Không thể tải danh sách đơn hàng.');
+      if (requestId === listRequestRef.current) {
+        setError('Không thể tải danh sách đơn hàng.');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === listRequestRef.current) setLoading(false);
     }
   }, []);
 
@@ -80,12 +86,15 @@ export function useOrders() {
   }, []);
 
   const updateOrder = useCallback(async (id: string, data: Partial<Order>) => {
+    setSaving(true);
     try {
       const res = await api.put(`/orders/${id}`, data);
       return res.data;
     } catch (err) {
       console.error(err);
       return null;
+    } finally {
+      setSaving(false);
     }
   }, []);
 

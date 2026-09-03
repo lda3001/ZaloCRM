@@ -23,6 +23,7 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: true,
         phone: true,
         status: true,
+        sessionData: true,
         lastConnectedAt: true,
         createdAt: true,
         owner: { select: { id: true, fullName: true, email: true } },
@@ -31,9 +32,10 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
     });
 
     // Merge live status from pool
-    return accounts.map((a) => ({
-      ...a,
-      liveStatus: zaloPool.getStatus(a.id),
+    return accounts.map(({ sessionData, ...account }) => ({
+      ...account,
+      hasSession: Boolean(sessionData),
+      liveStatus: zaloPool.getStatus(account.id),
     }));
   });
 

@@ -9,6 +9,7 @@ import {
   ModalContent,
   ModalFooter,
   ModalHeader,
+  Pagination,
   Select,
   SelectItem,
   Skeleton,
@@ -23,8 +24,11 @@ import {
   Textarea,
 } from '@heroui/react';
 import type { SharedSelection } from '@heroui/react';
-import { Check, Plus, Trash, X } from '@phosphor-icons/react';
+import { Check, PencilSimple, Plus, Trash, X } from '@phosphor-icons/react';
+import { useSearchParams } from 'react-router-dom';
 import { formatDate } from '../lib/format';
+import ContactAutocomplete from '../components/contacts/ContactAutocomplete';
+import { api } from '../api/client';
 import {
   APPOINTMENT_STATUS_OPTIONS,
   APPOINTMENT_TYPE_OPTIONS,
@@ -40,6 +44,7 @@ interface CreateForm {
   appointmentDate: string;
   appointmentTime: string;
   type: string;
+  status: string;
   notes: string;
 }
 
@@ -48,6 +53,7 @@ const emptyForm = (): CreateForm => ({
   appointmentDate: '',
   appointmentTime: '',
   type: 'follow_up',
+  status: 'scheduled',
   notes: '',
 });
 
@@ -75,8 +81,10 @@ function firstKey(keys: SharedSelection): string {
 }
 
 export default function AppointmentsView() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     appointments,
+    total,
     todayAppointments,
     upcomingAppointments,
     loading,
@@ -88,14 +96,18 @@ export default function AppointmentsView() {
     fetchToday,
     fetchUpcoming,
     createAppointment,
+    updateAppointment,
     deleteAppointment,
     markComplete,
     cancelAppointment,
   } = useAppointments();
 
   const [activeTab, setActiveTab] = useState<TabKey>('today');
+  const [allPage, setAllPage] = useState(1);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createForm, setCreateForm] = useState<CreateForm>(emptyForm());
+  const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
+  const [formError, setFormError] = useState('');
 
   useEffect(() => {
     void fetchToday();
@@ -104,6 +116,41 @@ export default function AppointmentsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const appointmentId = searchParams.get('appointment');
+    if (!appointmentId) return;
+    let active = true;
+    void (async () => {
+      try {
+        const res = await api.get(`/appointments/${appointmentId}`);
+        if (!active) return;
+        const appointment = res.data as Appointment;
+        setEditingAppointment(appointment);
+        setFormError('');
+        setCreateForm({
+          contactId: appointment.contactId,
+          appointmentDate: appointment.appointmentDate.slice(0, 10),
+          appointmentTime: appointment.appointmentTime || '',
+          type: appointment.type,
+          status: appointment.status,
+          notes: appointment.notes || '',
+        });
+        setShowCreateDialog(true);
+      } catch {
+        // The list remains usable when a search result was removed meanwhile.
+      } finally {
+        if (active) {
+          const nextParams = new URLSearchParams(searchParams);
+          nextParams.delete('appointment');
+          setSearchParams(nextParams, { replace: true });
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [searchParams, setSearchParams]);
+
   const activeList: Appointment[] =
     activeTab === 'today'
       ? todayAppointments
@@ -111,10 +158,10 @@ export default function AppointmentsView() {
         ? upcomingAppointments
         : appointments;
 
-  function fetchForTab(tab: TabKey) {
+  function fetchForTab(tab: TabKey, page = allPage) {
     if (tab === 'today') void fetchToday();
     else if (tab === 'upcoming') void fetchUpcoming();
-    else void fetchAppointments();
+    else void fetchAppointments({ page, limit: 50 });
   }
 
   function handleTabChange(key: Key) {
@@ -125,7 +172,13 @@ export default function AppointmentsView() {
 
   function handleStatusChange(status: string) {
     setFilters((prev) => ({ ...prev, status }));
-    void fetchAppointments({ status });
+    setAllPage(1);
+    void fetchAppointments({ status, page: 1, limit: 50 });
+  }
+
+  function handleAllPageChange(page: number) {
+    setAllPage(page);
+    void fetchAppointments({ page, limit: 50 });
   }
 
   async function onMarkComplete(id: string) {
@@ -139,22 +192,56 @@ export default function AppointmentsView() {
   }
 
   async function onDelete(id: string) {
+    if (!window.confirm('Xoá lịch hẹn này?')) return;
     await deleteAppointment(id);
     fetchForTab(activeTab);
   }
 
+  function openCreate() {
+    setEditingAppointment(null);
+    setCreateForm(emptyForm());
+    setFormError('');
+    setShowCreateDialog(true);
+  }
+
+  function openEdit(appointment: Appointment) {
+    setEditingAppointment(appointment);
+    setFormError('');
+    setCreateForm({
+      contactId: appointment.contactId,
+      appointmentDate: appointment.appointmentDate.slice(0, 10),
+      appointmentTime: appointment.appointmentTime || '',
+      type: appointment.type,
+      status: appointment.status,
+      notes: appointment.notes || '',
+    });
+    setShowCreateDialog(true);
+  }
+
   async function onCreateSave() {
-    const result = await createAppointment({
+    if (!createForm.contactId || !createForm.appointmentDate) {
+      setFormError('Vui lòng chọn khách hàng và ngày hẹn.');
+      return;
+    }
+    setFormError('');
+    const payload = {
       contactId: createForm.contactId,
       appointmentDate: createForm.appointmentDate,
       appointmentTime: createForm.appointmentTime,
       type: createForm.type,
+      status: createForm.status,
       notes: createForm.notes || null,
-    });
+    };
+    const result = editingAppointment
+      ? await updateAppointment(editingAppointment.id, payload)
+      : await createAppointment(payload);
     if (result) {
       setShowCreateDialog(false);
       setCreateForm(emptyForm());
+      setEditingAppointment(null);
       fetchForTab(activeTab);
+    } else {
+      setFormError('Không thể lưu lịch hẹn. Có thể khách hàng đã có lịch trong ngày này.');
     }
   }
 
@@ -162,7 +249,7 @@ export default function AppointmentsView() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold text-foreground">Lịch hẹn</h1>
-        <Button color="primary" startContent={<Plus size={18} />} onPress={() => setShowCreateDialog(true)}>
+        <Button color="primary" startContent={<Plus size={18} />} onPress={openCreate}>
           Tạo lịch hẹn
         </Button>
       </div>
@@ -273,6 +360,16 @@ export default function AppointmentsView() {
                     isIconOnly
                     size="sm"
                     variant="light"
+                    aria-label="Chỉnh sửa"
+                    title="Chỉnh sửa"
+                    onPress={() => openEdit(item)}
+                  >
+                    <PencilSimple size={18} />
+                  </Button>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="light"
                     color="danger"
                     aria-label="Xoá"
                     title="Xoá"
@@ -287,6 +384,20 @@ export default function AppointmentsView() {
         </TableBody>
       </Table>
 
+      {activeTab === 'all' && total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm tabular-nums text-foreground-500">Tổng: {total} lịch hẹn</span>
+          <Pagination
+            page={allPage}
+            total={Math.max(1, Math.ceil(total / 50))}
+            onChange={handleAllPageChange}
+            showControls
+            variant="bordered"
+            size="sm"
+          />
+        </div>
+      )}
+
       <Modal
         isOpen={showCreateDialog}
         onOpenChange={setShowCreateDialog}
@@ -296,16 +407,18 @@ export default function AppointmentsView() {
         <ModalContent>
           {(onClose) => (
             <>
-              <ModalHeader className="flex flex-col gap-1">Tạo lịch hẹn</ModalHeader>
+              <ModalHeader className="flex flex-col gap-1">
+                {editingAppointment ? 'Chỉnh sửa lịch hẹn' : 'Tạo lịch hẹn'}
+              </ModalHeader>
 
               <ModalBody>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Input
-                    label="ID khách hàng"
-                    description="Nhập ID khách hàng"
+                  <ContactAutocomplete
+                    key={editingAppointment?.id ?? 'create'}
                     value={createForm.contactId}
-                    onValueChange={(v) => setCreateForm((f) => ({ ...f, contactId: v }))}
-                    variant="bordered"
+                    onChange={(contactId) => setCreateForm((f) => ({ ...f, contactId }))}
+                    initialContact={editingAppointment?.contact}
+                    isRequired
                     className="sm:col-span-2"
                   />
 
@@ -340,6 +453,22 @@ export default function AppointmentsView() {
                     ))}
                   </Select>
 
+                  {editingAppointment && (
+                    <Select
+                      label="Trạng thái"
+                      variant="bordered"
+                      selectedKeys={[createForm.status]}
+                      onSelectionChange={(keys) =>
+                        setCreateForm((f) => ({ ...f, status: firstKey(keys) }))
+                      }
+                      className="sm:col-span-2"
+                    >
+                      {APPOINTMENT_STATUS_OPTIONS.map((o) => (
+                        <SelectItem key={o.value}>{o.text}</SelectItem>
+                      ))}
+                    </Select>
+                  )}
+
                   <Textarea
                     label="Ghi chú"
                     value={createForm.notes}
@@ -348,6 +477,9 @@ export default function AppointmentsView() {
                     minRows={2}
                     className="sm:col-span-2"
                   />
+                  {formError && (
+                    <Alert color="danger" title={formError} className="sm:col-span-2" />
+                  )}
                 </div>
               </ModalBody>
 

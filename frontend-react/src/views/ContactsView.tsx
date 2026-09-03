@@ -8,6 +8,7 @@ import {
   Skeleton,
 } from '@heroui/react';
 import { ChatsCircle, Plus } from '@phosphor-icons/react';
+import { useSearchParams } from 'react-router-dom';
 import ContactFilters from '../components/contacts/ContactFilters';
 import ContactDetailDialog from '../components/contacts/ContactDetailDialog';
 import { SOURCE_OPTIONS, STATUS_OPTIONS, useContacts } from '../hooks/use-contacts';
@@ -34,6 +35,7 @@ function statusColor(status: string) {
 }
 
 export default function ContactsView() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     contacts,
     total,
@@ -44,6 +46,7 @@ export default function ContactsView() {
     pagination,
     setPagination,
     fetchContacts,
+    fetchContact,
   } = useContacts();
 
   const [showDialog, setShowDialog] = useState(false);
@@ -54,6 +57,26 @@ export default function ContactsView() {
     // Initial load only — subsequent fetches are driven by filter/page handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const contactId = searchParams.get('contact');
+    if (!contactId) return;
+    let active = true;
+    void (async () => {
+      const detail = await fetchContact(contactId);
+      if (!active) return;
+      if (detail) {
+        setSelectedContact(detail);
+        setShowDialog(true);
+      }
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('contact');
+      setSearchParams(nextParams, { replace: true });
+    })();
+    return () => {
+      active = false;
+    };
+  }, [searchParams, setSearchParams, fetchContact]);
 
   const totalPages = Math.max(1, Math.ceil(total / pagination.limit));
 

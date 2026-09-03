@@ -11,6 +11,7 @@ import {
   ModalContent,
   ModalFooter,
   ModalHeader,
+  Pagination,
   Select,
   SelectItem,
   Skeleton,
@@ -35,6 +36,7 @@ import {
 } from '@phosphor-icons/react';
 import { formatDate, formatVND } from '../lib/format';
 import OrderStaffTable from '../components/orders/OrderStaffTable';
+import ContactAutocomplete from '../components/contacts/ContactAutocomplete';
 import { ORDER_STATUS_OPTIONS, useOrders } from '../hooks/use-orders';
 import type { Order } from '../hooks/use-orders';
 
@@ -94,6 +96,7 @@ function StatCard({
 export default function OrdersView() {
   const {
     orders,
+    total,
     loading,
     saving,
     stats,
@@ -110,9 +113,11 @@ export default function OrdersView() {
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [page, setPage] = useState(1);
   const [dialog, setDialog] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<OrderForm>(emptyForm());
+  const [formError, setFormError] = useState('');
 
   useEffect(() => {
     void fetchOrders();
@@ -122,8 +127,8 @@ export default function OrdersView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function buildParams(searchVal: string, statusVal: string): Record<string, string> {
-    const p: Record<string, string> = {};
+  function buildParams(searchVal: string, statusVal: string, pageVal = page): Record<string, string> {
+    const p: Record<string, string> = { page: String(pageVal), limit: '50' };
     if (searchVal) p.search = searchVal;
     if (statusVal) p.status = statusVal;
     return p;
@@ -131,22 +136,31 @@ export default function OrdersView() {
 
   function handleSearchChange(v: string) {
     setSearch(v);
-    void fetchOrders(buildParams(v, statusFilter));
+    setPage(1);
+    void fetchOrders(buildParams(v, statusFilter, 1));
   }
 
   function handleStatusChange(status: string) {
     setStatusFilter(status);
-    void fetchOrders(buildParams(search, status));
+    setPage(1);
+    void fetchOrders(buildParams(search, status, 1));
+  }
+
+  function handlePageChange(nextPage: number) {
+    setPage(nextPage);
+    void fetchOrders(buildParams(search, statusFilter, nextPage));
   }
 
   function openCreate() {
     setEditingId(null);
     setForm(emptyForm());
+    setFormError('');
     setDialog(true);
   }
 
   function openEdit(o: Order) {
     setEditingId(o.id);
+    setFormError('');
     setForm({
       contactId: o.contactId,
       totalAmount: String(o.totalAmount),
@@ -157,15 +171,26 @@ export default function OrdersView() {
   }
 
   async function submit() {
+    if (!editingId && !form.contactId) {
+      setFormError('Vui lòng chọn khách hàng.');
+      return;
+    }
+    if (!form.totalAmount || Number(form.totalAmount) <= 0) {
+      setFormError('Tổng tiền phải lớn hơn 0.');
+      return;
+    }
+    setFormError('');
     const payload = {
       totalAmount: Number(form.totalAmount) || 0,
       status: form.status,
       notes: form.notes || null,
     };
-    if (editingId) {
-      await updateOrder(editingId, payload);
-    } else {
-      await createOrder({ contactId: form.contactId, ...payload });
+    const result = editingId
+      ? await updateOrder(editingId, payload)
+      : await createOrder({ contactId: form.contactId, ...payload });
+    if (!result) {
+      setFormError('Không thể lưu đơn hàng. Vui lòng kiểm tra lại dữ liệu.');
+      return;
     }
     setDialog(false);
     void fetchOrders(buildParams(search, statusFilter));
@@ -324,6 +349,20 @@ export default function OrdersView() {
         </CardBody>
       </Card>
 
+      {total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm tabular-nums text-foreground-500">Tổng: {total} đơn hàng</span>
+          <Pagination
+            page={page}
+            total={Math.max(1, Math.ceil(total / 50))}
+            onChange={handlePageChange}
+            showControls
+            variant="bordered"
+            size="sm"
+          />
+        </div>
+      )}
+
       {/* Staff performance */}
       <OrderStaffTable staffStats={staffStats} />
 
@@ -339,11 +378,10 @@ export default function OrdersView() {
               <ModalBody>
                 <div className="flex flex-col gap-4">
                   {!editingId && (
-                    <Input
-                      label="ID Khách hàng"
+                    <ContactAutocomplete
                       value={form.contactId}
-                      onValueChange={(v) => setForm((f) => ({ ...f, contactId: v }))}
-                      variant="bordered"
+                      onChange={(contactId) => setForm((f) => ({ ...f, contactId }))}
+                      isRequired
                     />
                   )}
 
@@ -376,6 +414,7 @@ export default function OrdersView() {
                     variant="bordered"
                     minRows={2}
                   />
+                  {formError && <Alert color="danger" title={formError} />}
                 </div>
               </ModalBody>
 
