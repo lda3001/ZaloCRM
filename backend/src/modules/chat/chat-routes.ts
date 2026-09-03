@@ -18,6 +18,24 @@ const GROUP_INFO_CACHE_TTL_MS = 10 * 60_000;
 const GROUP_INFO_CACHE_MAX_ENTRIES = 300;
 const groupInfoCache = new Map<string, { payload: any; cachedAt: number }>();
 
+interface ZaloMuteEntry {
+  id?: string | number;
+}
+
+interface ZaloMuteResponse {
+  chatEntries?: ZaloMuteEntry[];
+  groupChatEntries?: ZaloMuteEntry[];
+}
+
+function normalizeZaloThreadId(value: unknown): string {
+  return String(value ?? '').replace(/_0$/, '');
+}
+
+function mutedThreadIds(response: ZaloMuteResponse, threadType: 'user' | 'group'): Set<string> {
+  const entries = threadType === 'group' ? response.groupChatEntries : response.chatEntries;
+  return new Set((entries ?? []).map((entry) => normalizeZaloThreadId(entry.id)).filter(Boolean));
+}
+
 function groupInfoCacheKey(conversationId: string, requestedMemberIds: string): string {
   const memberKey = Array.from(new Set(
     requestedMemberIds.split(',').map((value) => value.split('_')[0]).filter(Boolean),
@@ -113,6 +131,72 @@ export async function chatRoutes(app: FastifyInstance) {
     return { unrepliedCount };
   });
 
+  // Hydrate the renderer's in-memory mute snapshot from Zalo. getMute returns
+  // all muted user/group threads for one logged-in Zalo account, so call it
+  // once per accessible account rather than once per stored conversation.
+  app.get('/api/v1/conversation-mutes', async (request: FastifyRequest) => {
+    const user = request.user!;
+    const accountWhere: any = { orgId: user.orgId };
+    if (user.role === 'member') {
+      const accessibleAccounts = await prisma.zaloAccountAccess.findMany({
+        where: { userId: user.id },
+        select: { zaloAccountId: true },
+      });
+      accountWhere.id = { in: accessibleAccounts.map((item) => item.zaloAccountId) };
+    }
+
+    const accounts = await prisma.zaloAccount.findMany({
+      where: accountWhere,
+      select: { id: true },
+    });
+    const accountIds = accounts.map((account) => account.id);
+    const conversations = accountIds.length > 0
+      ? await prisma.conversation.findMany({
+          where: { orgId: user.orgId, zaloAccountId: { in: accountIds } },
+          select: {
+            id: true,
+            zaloAccountId: true,
+            externalThreadId: true,
+            threadType: true,
+          },
+        })
+      : [];
+    const conversationsByAccount = new Map<string, typeof conversations>();
+    for (const conversation of conversations) {
+      const current = conversationsByAccount.get(conversation.zaloAccountId) ?? [];
+      current.push(conversation);
+      conversationsByAccount.set(conversation.zaloAccountId, current);
+    }
+
+    const mutedConversationIds: string[] = [];
+    const resolvedConversationIds: string[] = [];
+    const unavailableAccountIds: string[] = [];
+    await Promise.all(accounts.map(async (account) => {
+      const instance = zaloPool.getInstance(account.id);
+      if (!instance?.api) {
+        unavailableAccountIds.push(account.id);
+        return;
+      }
+      try {
+        const response = await instance.api.getMute() as ZaloMuteResponse;
+        const mutedUsers = mutedThreadIds(response, 'user');
+        const mutedGroups = mutedThreadIds(response, 'group');
+        const accountConversations = conversationsByAccount.get(account.id) ?? [];
+        resolvedConversationIds.push(...accountConversations.map((conversation) => conversation.id));
+        for (const conversation of accountConversations) {
+          const threadId = normalizeZaloThreadId(conversation.externalThreadId);
+          const entries = conversation.threadType === 'group' ? mutedGroups : mutedUsers;
+          if (threadId && entries.has(threadId)) mutedConversationIds.push(conversation.id);
+        }
+      } catch (err) {
+        unavailableAccountIds.push(account.id);
+        logger.warn(`[chat] getMute failed for account ${account.id}: ${String(err)}`);
+      }
+    }));
+
+    return { mutedConversationIds, resolvedConversationIds, unavailableAccountIds };
+  });
+
   // ── Get single conversation ──────────────────────────────────────────────
   app.get('/api/v1/conversations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
@@ -128,6 +212,72 @@ export async function chatRoutes(app: FastifyInstance) {
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
 
     return conversation;
+  });
+
+  // Always read the selected conversation's current mute state directly from
+  // the Zalo account so changes made on another device are reflected here.
+  app.get('/api/v1/conversations/:id/mute', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { externalThreadId: true, zaloAccountId: true, threadType: true },
+    });
+    if (!conversation?.externalThreadId) {
+      return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    }
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) {
+      return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+    }
+
+    try {
+      const response = await instance.api.getMute() as ZaloMuteResponse;
+      const entries = mutedThreadIds(
+        response,
+        conversation.threadType === 'group' ? 'group' : 'user',
+      );
+      return { muted: entries.has(normalizeZaloThreadId(conversation.externalThreadId)) };
+    } catch (err) {
+      logger.error(`[chat] getMute failed for conversation ${id}:`, err);
+      return reply.status(502).send({ error: 'Không đọc được trạng thái thông báo từ Zalo' });
+    }
+  });
+
+  app.put('/api/v1/conversations/:id/mute', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+    const { muted } = request.body as { muted?: unknown };
+    if (typeof muted !== 'boolean') {
+      return reply.status(400).send({ error: 'Trạng thái muted không hợp lệ' });
+    }
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { externalThreadId: true, zaloAccountId: true, threadType: true },
+    });
+    if (!conversation?.externalThreadId) {
+      return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    }
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) {
+      return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+    }
+
+    try {
+      // zca-js: action 1 = mute, 3 = unmute; thread type 0 = user, 1 = group.
+      await instance.api.setMute(
+        { duration: -1, action: muted ? 1 : 3 },
+        conversation.externalThreadId,
+        conversation.threadType === 'group' ? 1 : 0,
+      );
+      return { muted };
+    } catch (err) {
+      logger.error(`[chat] setMute failed for conversation ${id}:`, err);
+      return reply.status(502).send({ error: 'Không cập nhật được thông báo trên Zalo' });
+    }
   });
 
   app.get('/api/v1/conversations/:id/group-info', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {

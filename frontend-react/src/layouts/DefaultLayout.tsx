@@ -25,9 +25,14 @@ import {
   UsersThree,
 } from '@phosphor-icons/react';
 import { appPages } from '../router';
+import { api } from '../api/client';
 import { useAuthStore } from '../stores/auth';
 import GlobalSearch from '../components/GlobalSearch';
-import { OPEN_CHAT_EVENT } from '../utils/desktop-notify';
+import {
+  clearConversationMuteSnapshot,
+  OPEN_CHAT_EVENT,
+  syncConversationMuteSnapshot,
+} from '../utils/desktop-notify';
 import { startChatSocket, stopChatSocket } from '../services/chat-socket';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
@@ -60,14 +65,39 @@ export default function DefaultLayout() {
   // The chat socket lives for the whole session, not just while the Chat
   // screen is mounted: start it on login, stop it on logout.
   useEffect(() => {
-    if (useAuthStore.getState().token) startChatSocket();
+    const refreshMuteSnapshot = async () => {
+      try {
+        const response = await api.get('/conversation-mutes');
+        syncConversationMuteSnapshot(
+          response.data?.resolvedConversationIds ?? [],
+          response.data?.mutedConversationIds ?? [],
+        );
+      } catch {
+        // A disconnected Zalo account must not prevent the app from loading.
+      }
+    };
+
+    if (useAuthStore.getState().token) {
+      startChatSocket();
+      void refreshMuteSnapshot();
+    }
+    const muteRefreshInterval = window.setInterval(() => {
+      if (useAuthStore.getState().token) void refreshMuteSnapshot();
+    }, 5 * 60_000);
     const unsub = useAuthStore.subscribe((state, prev) => {
-      if (state.token && !prev.token) startChatSocket();
-      else if (!state.token && prev.token) stopChatSocket();
+      if (state.token && !prev.token) {
+        startChatSocket();
+        void refreshMuteSnapshot();
+      } else if (!state.token && prev.token) {
+        stopChatSocket();
+        clearConversationMuteSnapshot();
+      }
     });
     return () => {
+      window.clearInterval(muteRefreshInterval);
       unsub();
       stopChatSocket();
+      clearConversationMuteSnapshot();
     };
   }, []);
 

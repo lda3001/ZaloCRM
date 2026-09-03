@@ -26,7 +26,7 @@ import {
 import { api } from '../../api/client';
 import {
   isConversationMuted,
-  setConversationMuted,
+  updateConversationMuteSnapshot,
 } from '../../utils/desktop-notify';
 import type { Conversation, Message, SendMessageResult } from '../../hooks/use-chat';
 import { getGroupInfoCached } from '../../services/group-info-cache';
@@ -601,9 +601,47 @@ function MessageThread({
     };
   }, [conversation?.id, conversation?.threadType, groupSenderIdsKey]);
   const [muted, setMuted] = useState(false);
+  const [muteLoading, setMuteLoading] = useState(false);
+  const muteLoadingRef = useRef(false);
+  const muteRequestSequenceRef = useRef(0);
   useEffect(() => {
-    setMuted(conversation ? isConversationMuted(conversation.id) : false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!conversation) {
+      muteRequestSequenceRef.current += 1;
+      muteLoadingRef.current = false;
+      setMuted(false);
+      setMuteLoading(false);
+      return;
+    }
+    let active = true;
+    const conversationId = conversation.id;
+    const requestSequence = ++muteRequestSequenceRef.current;
+    setMuted(isConversationMuted(conversationId));
+    muteLoadingRef.current = true;
+    setMuteLoading(true);
+    api.get(`/conversations/${conversationId}/mute`)
+      .then((response) => {
+        const nextMuted = Boolean(response.data?.muted);
+        updateConversationMuteSnapshot(conversationId, nextMuted);
+        if (!active || requestSequence !== muteRequestSequenceRef.current) return;
+        setMuted(nextMuted);
+      })
+      .catch((err: any) => {
+        if (!active || requestSequence !== muteRequestSequenceRef.current) return;
+        setSyncSnack({
+          show: true,
+          text: err?.response?.data?.error || 'Không đọc được trạng thái thông báo từ Zalo.',
+          color: 'warning',
+        });
+      })
+      .finally(() => {
+        if (active && requestSequence === muteRequestSequenceRef.current) {
+          muteLoadingRef.current = false;
+          setMuteLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, [conversation?.id]);
   const [picker, setPicker] = useState<'emoji' | 'sticker' | null>(null);
   const [emojiGroup, setEmojiGroup] = useState('smileys');
@@ -720,11 +758,37 @@ function MessageThread({
     setPicker((cur) => (cur === kind ? null : kind));
   }
 
-  function toggleMuted() {
-    if (!conversation) return;
+  async function toggleMuted() {
+    if (!conversation || muteLoadingRef.current) return;
+    const conversationId = conversation.id;
+    const requestSequence = ++muteRequestSequenceRef.current;
     const next = !muted;
-    setConversationMuted(conversation.id, next);
-    setMuted(next);
+    muteLoadingRef.current = true;
+    setMuteLoading(true);
+    try {
+      const response = await api.put(`/conversations/${conversationId}/mute`, { muted: next });
+      const nextMuted = Boolean(response.data?.muted);
+      updateConversationMuteSnapshot(conversationId, nextMuted);
+      if (requestSequence !== muteRequestSequenceRef.current) return;
+      setMuted(nextMuted);
+      setSyncSnack({
+        show: true,
+        text: nextMuted ? 'Đã tắt thông báo trên Zalo.' : 'Đã bật thông báo trên Zalo.',
+        color: 'success',
+      });
+    } catch (err: any) {
+      if (requestSequence !== muteRequestSequenceRef.current) return;
+      setSyncSnack({
+        show: true,
+        text: err?.response?.data?.error || 'Không cập nhật được thông báo trên Zalo.',
+        color: 'warning',
+      });
+    } finally {
+      if (requestSequence === muteRequestSequenceRef.current) {
+        muteLoadingRef.current = false;
+        setMuteLoading(false);
+      }
+    }
   }
 
   const [syncing, setSyncing] = useState(false);
@@ -1087,13 +1151,14 @@ function MessageThread({
           size="sm"
           variant="light"
           color={muted ? 'warning' : 'default'}
+          isLoading={muteLoading}
           aria-label={
             muted
               ? 'Bật thông báo cho cuộc trò chuyện này'
               : 'Tắt thông báo cho cuộc trò chuyện này'
           }
           title={muted ? 'Bật thông báo' : 'Tắt thông báo'}
-          onPress={toggleMuted}
+          onPress={() => void toggleMuted()}
         >
           {muted ? <BellSlash size={20} weight="fill" /> : <Bell size={20} />}
         </Button>

@@ -10,24 +10,30 @@ export const PENDING_CONV_KEY = 'zalocrm-pending-conv';
 export const SOUND_STORAGE_KEY = 'zalocrm:soundEnabled';
 
 
-export const MUTE_STORAGE_PREFIX = 'zalocrm:muted:';
+// Runtime snapshot populated from Zalo's getMute API. This is intentionally
+// not persisted locally: Zalo remains the single source of truth.
+const mutedConversationIds = new Set<string>();
 
-/** Muted conversations produce neither toasts nor chimes. */
+/** Muted conversations produce neither desktop toasts nor chimes. */
 export function isConversationMuted(conversationId: string): boolean {
-  try {
-    return localStorage.getItem(MUTE_STORAGE_PREFIX + conversationId) === '1';
-  } catch {
-    return false;
-  }
+  return mutedConversationIds.has(conversationId);
 }
 
-export function setConversationMuted(conversationId: string, muted: boolean): void {
-  try {
-    if (muted) localStorage.setItem(MUTE_STORAGE_PREFIX + conversationId, '1');
-    else localStorage.removeItem(MUTE_STORAGE_PREFIX + conversationId);
-  } catch {
-    // Ignore storage errors.
-  }
+export function updateConversationMuteSnapshot(conversationId: string, muted: boolean): void {
+  if (muted) mutedConversationIds.add(conversationId);
+  else mutedConversationIds.delete(conversationId);
+}
+
+export function syncConversationMuteSnapshot(
+  resolvedConversationIds: string[],
+  mutedIds: string[],
+): void {
+  for (const conversationId of resolvedConversationIds) mutedConversationIds.delete(conversationId);
+  for (const conversationId of mutedIds) mutedConversationIds.add(conversationId);
+}
+
+export function clearConversationMuteSnapshot(): void {
+  mutedConversationIds.clear();
 }
 
 export const SOUND_URL = '/sounds/notify.wav';
