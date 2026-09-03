@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Chip, Divider, Input } from '@heroui/react';
+import { Alert, Button, Chip, Divider, Input } from '@heroui/react';
 import { Plus, ShoppingCartSimple } from '@phosphor-icons/react';
 import { api } from '../../api/client';
 import { formatDate, formatVND } from '../../lib/format';
@@ -7,6 +7,7 @@ import { ORDER_STATUS_OPTIONS } from '../../hooks/use-orders';
 
 interface Props {
   contactId: string | null;
+  conversationId: string;
 }
 
 interface ContactOrder {
@@ -38,11 +39,12 @@ function statusLabel(s: string): string {
   return ORDER_STATUS_OPTIONS.find((o) => o.value === s)?.text ?? s;
 }
 
-export default function ChatOrders({ contactId }: Props) {
+export default function ChatOrders({ contactId, conversationId }: Props) {
   const [contactOrders, setContactOrders] = useState<ContactOrder[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOrder, setNewOrder] = useState({ totalAmount: '', notes: '' });
+  const [error, setError] = useState('');
 
   async function loadOrders() {
     if (!contactId) return;
@@ -50,7 +52,7 @@ export default function ChatOrders({ contactId }: Props) {
       const res = await api.get(`/contacts/${contactId}/orders`);
       setContactOrders(res.data.orders || []);
     } catch {
-      /* ignore */
+      setError('Không tải được danh sách đơn hàng.');
     }
   }
 
@@ -60,20 +62,24 @@ export default function ChatOrders({ contactId }: Props) {
   }, [contactId]);
 
   async function submitCreate() {
-    if (!contactId || !Number(newOrder.totalAmount)) return;
+    if (!contactId || Number(newOrder.totalAmount) <= 0) {
+      setError('Tổng tiền phải lớn hơn 0.');
+      return;
+    }
+    setError('');
     setCreating(true);
     try {
       await api.post('/orders', {
         contactId,
         totalAmount: Number(newOrder.totalAmount),
         notes: newOrder.notes || null,
-        conversationId: null,
+        conversationId,
       });
       setShowCreate(false);
       setNewOrder({ totalAmount: '', notes: '' });
       await loadOrders();
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Tạo đơn hàng thất bại.');
     } finally {
       setCreating(false);
     }
@@ -127,6 +133,8 @@ export default function ChatOrders({ contactId }: Props) {
           </Button>
         </div>
       )}
+
+      {error && <Alert color="warning" title={error} className="mb-2" />}
 
       {/* Order list */}
       {contactOrders.map((o) => (

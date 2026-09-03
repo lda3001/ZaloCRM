@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
-import { Avatar, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, Spinner, Textarea } from '@heroui/react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Avatar, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, Spinner, Textarea } from '@heroui/react';
 import {
   ArrowLeft,
   ArrowsClockwise,
@@ -28,17 +28,24 @@ import {
   isConversationMuted,
   setConversationMuted,
 } from '../../utils/desktop-notify';
-import type { Conversation, Message } from '../../hooks/use-chat';
+import type { Conversation, Message, SendMessageResult } from '../../hooks/use-chat';
 import { getGroupInfoCached } from '../../services/group-info-cache';
 
 interface Props {
   conversation: Conversation | null;
   messages: Message[];
   loading: boolean;
+  loadingOlder?: boolean;
+  hasOlderMessages?: boolean;
+  messageError?: string;
   sending: boolean;
   showContactPanel?: boolean;
-  onSend: (content: string, opts?: import('../../hooks/use-chat').SendMessageOptions) => void;
+  onSend: (
+    content: string,
+    opts?: import('../../hooks/use-chat').SendMessageOptions,
+  ) => Promise<SendMessageResult>;
   onSendFiles?: (files: File[], caption?: string) => Promise<boolean>;
+  onLoadOlder?: () => Promise<boolean>;
   onToggleContactPanel: () => void;
   onOpenContactPanel?: () => void;
   onOpenConversation?: (conversationId: string) => void;
@@ -519,10 +526,14 @@ function MessageThread({
   conversation,
   messages,
   loading,
+  loadingOlder = false,
+  hasOlderMessages = false,
+  messageError = '',
   sending,
   showContactPanel = false,
   onSend,
   onSendFiles,
+  onLoadOlder,
   onToggleContactPanel,
   onOpenContactPanel,
   onOpenConversation,
@@ -544,6 +555,10 @@ function MessageThread({
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [syncSnack, setSyncSnack] = useState({ show: false, text: '', color: 'success' });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const nearBottomRef = useRef(true);
+  const previousConversationRef = useRef<string | null>(null);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -607,6 +622,12 @@ function MessageThread({
   const [stickerKeyword, setStickerKeyword] = useState('');
 
   useEffect(() => {
+    setStickers([]);
+    setStickerKeyword('');
+    setPicker(null);
+  }, [conversation?.zaloAccount?.id]);
+
+  useEffect(() => {
     if (picker === 'sticker' && stickers.length === 0 && !stickerKeyword) {
       setStickerLoading(true);
       api
@@ -619,7 +640,13 @@ function MessageThread({
         .then((res) => {
           setStickers(normalizeStickers((res.data as any)?.stickers ?? []));
         })
-        .catch(() => {})
+        .catch((err: any) => {
+          setSyncSnack({
+            show: true,
+            text: err?.response?.data?.error || 'Không tải được sticker.',
+            color: 'warning',
+          });
+        })
         .finally(() => setStickerLoading(false));
     }
   }, [picker, stickers.length, stickerKeyword, conversation?.zaloAccount?.id]);
@@ -645,7 +672,13 @@ function MessageThread({
         .then((res) => {
           setStickers(normalizeStickers((res.data as any)?.stickers ?? []));
         })
-        .catch(() => {})
+        .catch((err: any) => {
+          setSyncSnack({
+            show: true,
+            text: err?.response?.data?.error || 'Tìm sticker thất bại.',
+            color: 'warning',
+          });
+        })
         .finally(() => setStickerLoading(false));
     }, 400);
   }
@@ -667,9 +700,20 @@ function MessageThread({
     handleStickerKeyword(keyword);
   }
 
-  function sendStickerItem(st: StickerItem) {
-    setPicker(null);
-    onSend('', { contentType: 'sticker', sticker: { id: st.id, catId: st.catId, type: st.type } });
+  async function sendStickerItem(st: StickerItem) {
+    if (sending) return;
+    const result = await onSend('', {
+      contentType: 'sticker',
+      sticker: { id: st.id, catId: st.catId, type: st.type },
+    });
+    if (result.ok) setPicker(null);
+    else {
+      setSyncSnack({
+        show: true,
+        text: result.error || 'Gửi sticker thất bại.',
+        color: 'error',
+      });
+    }
   }
 
   function togglePicker(kind: 'emoji' | 'sticker') {
@@ -704,14 +748,50 @@ function MessageThread({
     }
   }
 
-  function handleSend() {
+  async function handleSend() {
+    if (sending) return;
     if (pendingFiles.length > 0) {
-      void handleSendFiles();
+      await handleSendFiles();
       return;
     }
     if (!inputText.trim()) return;
-    onSend(inputText);
-    setInputText('');
+    const draft = inputText;
+    const result = await onSend(draft);
+    if (result.ok) {
+      setInputText((current) => (current === draft ? '' : current));
+    } else {
+      setSyncSnack({
+        show: true,
+        text: result.error || 'Gửi tin nhắn thất bại.',
+        color: 'error',
+      });
+    }
+  }
+
+  async function handleLoadOlder() {
+    if (!onLoadOlder || loadingOlder) return;
+    const element = containerRef.current;
+    if (element) {
+      preserveScrollRef.current = { height: element.scrollHeight, top: element.scrollTop };
+    }
+    const loaded = await onLoadOlder();
+    if (!loaded) preserveScrollRef.current = null;
+  }
+
+  function handleMessageScroll() {
+    const element = containerRef.current;
+    if (!element) return;
+    const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+    nearBottomRef.current = nearBottom;
+    if (nearBottom) setShowJumpToBottom(false);
+  }
+
+  function jumpToBottom() {
+    const element = containerRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    nearBottomRef.current = true;
+    setShowJumpToBottom(false);
   }
 
   const MAX_FILES = 10;
@@ -873,7 +953,7 @@ function MessageThread({
           hour: '2-digit',
           minute: '2-digit',
         }),
-        type: 'tai_kham',
+        type: 'follow_up',
         notes: `[Zalo] ${p.title || ''}`,
       });
       setSyncSnack({ show: true, text: 'Đã đồng bộ lịch hẹn thành công!', color: 'success' });
@@ -887,10 +967,27 @@ function MessageThread({
     }
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = containerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+    if (!el) return;
+    const conversationChanged = previousConversationRef.current !== (conversation?.id ?? null);
+    previousConversationRef.current = conversation?.id ?? null;
+    const preserved = preserveScrollRef.current;
+    if (preserved) {
+      el.scrollTop = preserved.top + (el.scrollHeight - preserved.height);
+      preserveScrollRef.current = null;
+    } else if (
+      conversationChanged
+      || nearBottomRef.current
+      || messages[messages.length - 1]?.senderType === 'self'
+    ) {
+      el.scrollTop = el.scrollHeight;
+      nearBottomRef.current = true;
+      setShowJumpToBottom(false);
+    } else if (messages.length > 0) {
+      setShowJumpToBottom(true);
+    }
+  }, [conversation?.id, messages.length]);
 
   useEffect(() => {
     if (!syncSnack.show) return;
@@ -1017,10 +1114,43 @@ function MessageThread({
       </div>
 
       {/* Messages */}
-      <div ref={containerRef} className="chat-message-list flex-1 overflow-y-auto px-3 py-3">
+      <div
+        ref={containerRef}
+        className="chat-message-list flex-1 overflow-y-auto px-3 py-3"
+        onScroll={handleMessageScroll}
+      >
         {loading && (
           <div className="flex justify-center pb-2">
             <Spinner size="sm" color="primary" />
+          </div>
+        )}
+
+        {hasOlderMessages && (
+          <div className="flex justify-center pb-3">
+            <Button
+              size="sm"
+              variant="flat"
+              isLoading={loadingOlder}
+              onPress={() => void handleLoadOlder()}
+            >
+              Tải tin nhắn cũ hơn
+            </Button>
+          </div>
+        )}
+
+        {messageError && (
+          <div className="mx-auto mb-3 flex max-w-xl items-center gap-2">
+            <Alert color="warning" title={messageError} className="flex-1" />
+            <Button
+              size="sm"
+              variant="flat"
+              onPress={() => {
+                if (messages.length > 0 && hasOlderMessages) void handleLoadOlder();
+                else onRefreshMessages?.();
+              }}
+            >
+              Thử lại
+            </Button>
           </div>
         )}
 
@@ -1191,10 +1321,22 @@ function MessageThread({
           );
         })}
 
-        {!loading && messages.length === 0 && (
+        {!loading && !messageError && messages.length === 0 && (
           <div className="py-8 text-center text-foreground-500">Chưa có tin nhắn</div>
         )}
       </div>
+
+      {showJumpToBottom && (
+        <Button
+          size="sm"
+          color="primary"
+          variant="shadow"
+          className="absolute bottom-24 right-4 z-20"
+          onPress={jumpToBottom}
+        >
+          Tin nhắn mới ↓
+        </Button>
+      )}
 
       {/* Sync snackbar */}
       {syncSnack.show && (
@@ -1260,7 +1402,7 @@ function MessageThread({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              handleSend();
+              void handleSend();
             }
           }}
         />
@@ -1310,7 +1452,7 @@ function MessageThread({
           isLoading={sending}
           isDisabled={!inputText.trim() && pendingFiles.length === 0}
           aria-label="Gửi"
-          onPress={handleSend}
+          onPress={() => void handleSend()}
         >
           <PaperPlaneTilt size={18} />
         </Button>
@@ -1431,7 +1573,7 @@ function MessageThread({
                           key={st.id}
                           type="button"
                           className="flex aspect-square items-center justify-center rounded-lg transition-colors hover:bg-default-100"
-                          onClick={() => sendStickerItem(st)}
+                          onClick={() => void sendStickerItem(st)}
                         >
                           <img
                             src={st.stickerUrl || undefined}

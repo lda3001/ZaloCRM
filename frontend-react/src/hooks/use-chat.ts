@@ -5,6 +5,11 @@ export interface SendMessageOptions {
   contentType?: 'text' | 'sticker';
   sticker?: { id: number; catId: number; type: number };
 }
+
+export interface SendMessageResult {
+  ok: boolean;
+  error?: string;
+}
 import { api } from '../api/client';
 import type { Contact } from './use-contacts';
 
@@ -59,11 +64,17 @@ export interface Message {
  * always see the currently selected conversation.
  */
 export function useChat() {
+  const MESSAGE_PAGE_SIZE = 200;
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(false);
+  const [loadingMoreConvs, setLoadingMoreConvs] = useState(false);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [loadingOlderMsgs, setLoadingOlderMsgs] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [messageError, setMessageError] = useState('');
   const [sendingMsg, setSendingMsg] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
@@ -73,6 +84,11 @@ export function useChat() {
   selectedConvIdRef.current = selectedConvId;
   const messageAbortRef = useRef<AbortController | null>(null);
   const messageRequestSeqRef = useRef(0);
+  const messagePageRef = useRef(1);
+  const conversationPageRef = useRef(1);
+  const conversationRequestSeqRef = useRef(0);
+  const loadingMoreConvsRef = useRef(false);
+  const loadingOlderMsgsRef = useRef(false);
 
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
@@ -85,18 +101,23 @@ export function useChat() {
     conversations.find((c) => c.id === selectedConvId) ?? null;
 
   const fetchConversations = useCallback(async () => {
+    const requestSeq = ++conversationRequestSeqRef.current;
     setLoadingConvs(true);
     try {
       const res = await api.get('/conversations', {
         params: {
+          page: 1,
           limit: 100,
           search: searchQueryRef.current,
           accountId: accountFilterRef.current || undefined,
           threadType: threadFilterRef.current === 'all' ? undefined : threadFilterRef.current,
         },
       });
+      if (requestSeq !== conversationRequestSeqRef.current) return;
+      const next = res.data.conversations as Conversation[];
+      conversationPageRef.current = 1;
+      setHasMoreConversations(next.length < Number(res.data.total ?? next.length));
       setConversations((prev) => {
-        const next = res.data.conversations as Conversation[];
         const selected = prev.find(
           (conversation) => conversation.id === selectedConvIdRef.current,
         );
@@ -110,34 +131,109 @@ export function useChat() {
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
     } finally {
-      setLoadingConvs(false);
+      if (requestSeq === conversationRequestSeqRef.current) setLoadingConvs(false);
     }
   }, []);
+
+  const loadMoreConversations = useCallback(async (): Promise<void> => {
+    if (loadingMoreConvsRef.current || !hasMoreConversations) return;
+    const requestSeq = conversationRequestSeqRef.current;
+    const nextPage = conversationPageRef.current + 1;
+    loadingMoreConvsRef.current = true;
+    setLoadingMoreConvs(true);
+    try {
+      const res = await api.get('/conversations', {
+        params: {
+          page: nextPage,
+          limit: 100,
+          search: searchQueryRef.current,
+          accountId: accountFilterRef.current || undefined,
+          threadType: threadFilterRef.current === 'all' ? undefined : threadFilterRef.current,
+        },
+      });
+      if (requestSeq !== conversationRequestSeqRef.current) return;
+      const incoming = res.data.conversations as Conversation[];
+      setConversations((current) => {
+        const existing = new Set(current.map((conversation) => conversation.id));
+        return [...current, ...incoming.filter((conversation) => !existing.has(conversation.id))];
+      });
+      conversationPageRef.current = nextPage;
+      setHasMoreConversations(nextPage * 100 < Number(res.data.total ?? 0));
+    } catch (err) {
+      console.error('Failed to load more conversations:', err);
+    } finally {
+      loadingMoreConvsRef.current = false;
+      setLoadingMoreConvs(false);
+    }
+  }, [hasMoreConversations]);
 
   const fetchMessages = useCallback(async (convId: string) => {
     messageAbortRef.current?.abort();
     const controller = new AbortController();
     messageAbortRef.current = controller;
     const requestSeq = ++messageRequestSeqRef.current;
+    messagePageRef.current = 1;
     setLoadingMsgs(true);
+    setMessageError('');
+    setHasOlderMessages(false);
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { limit: 200 },
+        params: { page: 1, limit: MESSAGE_PAGE_SIZE },
         signal: controller.signal,
       });
       if (
         requestSeq === messageRequestSeqRef.current
         && selectedConvIdRef.current === convId
       ) {
-        setMessages(res.data.messages);
+        const firstPage = res.data.messages as Message[];
+        setMessages(firstPage);
+        setHasOlderMessages(Number(res.data.total ?? firstPage.length) > firstPage.length);
       }
     } catch (err: any) {
       if (err?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
       console.error('Failed to fetch messages:', err);
+      if (requestSeq === messageRequestSeqRef.current) {
+        setMessageError(err?.response?.data?.error || 'Không thể tải tin nhắn.');
+      }
     } finally {
       if (requestSeq === messageRequestSeqRef.current) setLoadingMsgs(false);
     }
   }, []);
+
+  const loadOlderMessages = useCallback(async (): Promise<boolean> => {
+    const convId = selectedConvIdRef.current;
+    if (!convId || loadingOlderMsgsRef.current || !hasOlderMessages) return false;
+    const requestSeq = messageRequestSeqRef.current;
+    const nextPage = messagePageRef.current + 1;
+    loadingOlderMsgsRef.current = true;
+    setLoadingOlderMsgs(true);
+    setMessageError('');
+    try {
+      const res = await api.get(`/conversations/${convId}/messages`, {
+        params: { page: nextPage, limit: MESSAGE_PAGE_SIZE },
+      });
+      if (
+        selectedConvIdRef.current !== convId
+        || messageRequestSeqRef.current !== requestSeq
+      ) return false;
+      const older = res.data.messages as Message[];
+      setMessages((current) => {
+        const existing = new Set(current.map((message) => message.id));
+        return [...older.filter((message) => !existing.has(message.id)), ...current];
+      });
+      messagePageRef.current = nextPage;
+      setHasOlderMessages(nextPage * MESSAGE_PAGE_SIZE < Number(res.data.total ?? 0));
+      return older.length > 0;
+    } catch (err: any) {
+      if (selectedConvIdRef.current === convId) {
+        setMessageError(err?.response?.data?.error || 'Không thể tải thêm tin nhắn cũ.');
+      }
+      return false;
+    } finally {
+      loadingOlderMsgsRef.current = false;
+      setLoadingOlderMsgs(false);
+    }
+  }, [hasOlderMessages]);
 
   const selectConversation = useCallback(
     async (convId: string) => {
@@ -146,6 +242,10 @@ export function useChat() {
       setSelectedConvId(convId);
       setActiveConversation(convId);
       if (changedConversation) setMessages([]);
+      if (changedConversation) {
+        setMessageError('');
+        setHasOlderMessages(false);
+      }
       await fetchMessages(convId);
       // Fetch full conversation detail to populate contact CRM fields.
       try {
@@ -174,43 +274,59 @@ export function useChat() {
     [fetchMessages],
   );
 
-  const sendMessage = useCallback(async (content: string, opts?: SendMessageOptions) => {
-    if (!selectedConvIdRef.current) return;
-    if (opts?.contentType !== 'sticker' && !content.trim()) return;
+  const sendMessage = useCallback(async (
+    content: string,
+    opts?: SendMessageOptions,
+  ): Promise<SendMessageResult> => {
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId) return { ok: false, error: 'Chưa chọn cuộc trò chuyện.' };
+    if (opts?.contentType !== 'sticker' && !content.trim()) {
+      return { ok: false, error: 'Nội dung tin nhắn trống.' };
+    }
     setSendingMsg(true);
     try {
-      const res = await api.post(`/conversations/${selectedConvIdRef.current}/messages`, {
+      const res = await api.post(`/conversations/${conversationId}/messages`, {
         content: opts?.contentType === 'sticker' ? '' : content,
         contentType: opts?.contentType ?? 'text',
         sticker: opts?.contentType === 'sticker' ? opts.sticker : undefined,
       });
-      setMessages((prev) =>
-        prev.some((m) => m.id === res.data.id) ? prev : [...prev, res.data],
-      );
-    } catch (err) {
+      if (selectedConvIdRef.current === conversationId) {
+        setMessages((prev) =>
+          prev.some((m) => m.id === res.data.id) ? prev : [...prev, res.data],
+        );
+      }
+      return { ok: true };
+    } catch (err: any) {
       console.error('Failed to send message:', err);
+      return {
+        ok: false,
+        error: err?.response?.data?.error || 'Gửi tin nhắn thất bại.',
+      };
     } finally {
       setSendingMsg(false);
     }
   }, []);
 
   const sendAttachments = useCallback(async (files: File[], caption?: string): Promise<boolean> => {
-    if (!selectedConvIdRef.current || files.length === 0) return false;
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId || files.length === 0) return false;
     setSendingMsg(true);
     try {
       const form = new FormData();
       for (const file of files) form.append('files', file, file.name);
       if (caption?.trim()) form.append('caption', caption.trim());
       const res = await api.post(
-        `/conversations/${selectedConvIdRef.current}/attachments`,
+        `/conversations/${conversationId}/attachments`,
         form,
         { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 },
       );
       const sent = (res.data?.messages ?? []) as Message[];
-      setMessages((prev) => {
-        const existing = new Set(prev.map((m) => m.id));
-        return [...prev, ...sent.filter((m) => !existing.has(m.id))];
-      });
+      if (selectedConvIdRef.current === conversationId) {
+        setMessages((prev) => {
+          const existing = new Set(prev.map((m) => m.id));
+          return [...prev, ...sent.filter((m) => !existing.has(m.id))];
+        });
+      }
       void fetchConversations();
       return true;
     } catch (err) {
@@ -270,7 +386,12 @@ export function useChat() {
     selectedConv,
     messages,
     loadingConvs,
+    loadingMoreConvs,
+    hasMoreConversations,
     loadingMsgs,
+    loadingOlderMsgs,
+    hasOlderMessages,
+    messageError,
     sendingMsg,
     searchQuery,
     setSearchQuery,
@@ -279,7 +400,9 @@ export function useChat() {
     threadFilter,
     setThreadFilter: updateThreadFilter,
     fetchConversations,
+    loadMoreConversations,
     selectConversation,
+    loadOlderMessages,
     sendMessage,
     sendAttachments,
     initSocket,

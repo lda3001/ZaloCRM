@@ -9,6 +9,7 @@ import ChatAppointments from './ChatAppointments';
 import ChatOrders from './ChatOrders';
 
 interface Props {
+  conversationId: string;
   contactId: string | null;
   contact: Contact | null;
   onClose: () => void;
@@ -23,7 +24,7 @@ function firstKey(keys: SharedSelection): string {
   return first.done ? '' : String(first.value);
 }
 
-export default function ChatContactPanel({ contactId, contact, onClose, onSaved, onStartChat }: Props) {
+export default function ChatContactPanel({ conversationId, contactId, contact, onClose, onSaved, onStartChat }: Props) {
   const {
     form,
     setForm,
@@ -218,7 +219,7 @@ export default function ChatContactPanel({ contactId, contact, onClose, onSaved,
               appointments={contactAppointments}
               onRefresh={() => void reloadAppointments()}
             />
-            <ChatOrders contactId={contactId} />
+            <ChatOrders contactId={contactId} conversationId={conversationId} />
           </>
         )}
       </div>

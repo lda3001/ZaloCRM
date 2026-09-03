@@ -25,7 +25,12 @@ export default function ChatView() {
     selectedConv,
     messages,
     loadingConvs,
+    loadingMoreConvs,
+    hasMoreConversations,
     loadingMsgs,
+    loadingOlderMsgs,
+    hasOlderMessages,
+    messageError,
     sendingMsg,
     searchQuery,
     setSearchQuery,
@@ -33,7 +38,9 @@ export default function ChatView() {
     threadFilter,
     setThreadFilter,
     fetchConversations,
+    loadMoreConversations,
     selectConversation,
+    loadOlderMessages,
     sendMessage,
     sendAttachments,
     initSocket,
@@ -185,10 +192,13 @@ export default function ChatView() {
             conversations={conversations}
             selectedId={selectedConvId}
             loading={loadingConvs}
+            loadingMore={loadingMoreConvs}
+            hasMore={hasMoreConversations}
             search={searchQuery}
             threadFilter={threadFilter}
             onSearchChange={setSearchQuery}
             onSelect={handleSelect}
+            onLoadMore={() => void loadMoreConversations()}
             onFilterAccount={handleFilterAccount}
             onFilterThread={handleFilterThread}
           />
@@ -208,10 +218,14 @@ export default function ChatView() {
             conversation={selectedConv}
             messages={messages}
             loading={loadingMsgs}
+            loadingOlder={loadingOlderMsgs}
+            hasOlderMessages={hasOlderMessages}
+            messageError={messageError}
             sending={sendingMsg}
             showContactPanel={showContactPanel}
             onSend={sendMessage}
             onSendFiles={sendAttachments}
+            onLoadOlder={loadOlderMessages}
             onToggleContactPanel={() => setShowContactPanel((v) => !v)}
             onOpenContactPanel={() => setShowContactPanel(true)}
             onOpenConversation={(conversationId) => {
@@ -244,6 +258,7 @@ export default function ChatView() {
             />
           ) : selectedConv.contact ? (
             <ChatContactPanel
+              conversationId={selectedConv.id}
               contactId={selectedConv.contact.id}
               contact={selectedConv.contact}
               onClose={() => setShowContactPanel(false)}

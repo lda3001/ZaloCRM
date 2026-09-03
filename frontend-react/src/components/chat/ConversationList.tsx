@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Avatar, Chip, Input, Select, SelectItem, Spinner } from '@heroui/react';
+import { Avatar, Button, Chip, Input, Select, SelectItem, Spinner } from '@heroui/react';
 import type { SharedSelection } from '@heroui/react';
 import { MagnifyingGlass, User, UsersThree } from '@phosphor-icons/react';
 import { api } from '../../api/client';
@@ -9,10 +9,13 @@ interface Props {
   conversations: Conversation[];
   selectedId: string | null;
   loading: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
   search: string;
   threadFilter: ConversationTypeFilter;
   onSearchChange: (value: string) => void;
   onSelect: (id: string) => void;
+  onLoadMore?: () => void;
   onFilterAccount: (accountId: string | null) => void;
   onFilterThread: (threadType: ConversationTypeFilter) => void;
 }
@@ -107,10 +110,13 @@ export default function ConversationList({
   conversations,
   selectedId,
   loading,
+  loadingMore = false,
+  hasMore = false,
   search,
   threadFilter,
   onSearchChange,
   onSelect,
+  onLoadMore,
   onFilterAccount,
   onFilterThread,
 }: Props) {
@@ -281,6 +287,19 @@ export default function ConversationList({
             </button>
           );
         })}
+
+        {hasMore && (
+          <div className="flex justify-center p-3">
+            <Button
+              size="sm"
+              variant="flat"
+              isLoading={loadingMore}
+              onPress={onLoadMore}
+            >
+              Tải thêm hội thoại
+            </Button>
+          </div>
+        )}
 
         {!loading && conversations.length === 0 && (
           <div className="py-8 text-center text-sm text-foreground-500">

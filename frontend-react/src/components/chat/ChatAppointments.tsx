@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Chip, Divider, Input, Select, SelectItem } from '@heroui/react';
+import { Alert, Button, Chip, Divider, Input, Select, SelectItem } from '@heroui/react';
 import type { SharedSelection } from '@heroui/react';
 import { CalendarBlank, PencilSimple, Plus } from '@phosphor-icons/react';
 import { api } from '../../api/client';
@@ -55,6 +55,7 @@ export default function ChatAppointments({ contactId, appointments, onRefresh }:
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
   const [createForm, setCreateForm] = useState({ date: '', time: '', notes: '' });
   const [editForm, setEditForm] = useState({ date: '', time: '', notes: '', status: '' });
@@ -70,27 +71,36 @@ export default function ChatAppointments({ contactId, appointments, onRefresh }:
   }
 
   async function submitCreate() {
-    if (!createForm.date || !contactId) return;
+    if (!createForm.date || !contactId) {
+      setError('Vui lòng chọn ngày hẹn.');
+      return;
+    }
+    setError('');
     setCreating(true);
     try {
       await api.post('/appointments', {
         contactId,
         appointmentDate: new Date(createForm.date + 'T' + (createForm.time || '09:00') + ':00').toISOString(),
         appointmentTime: createForm.time || '09:00',
-        type: 'tai_kham',
+        type: 'follow_up',
         notes: createForm.notes || null,
       });
       setShowForm(false);
       setCreateForm({ date: '', time: '', notes: '' });
       onRefresh();
-    } catch (err) {
-      console.error('Create appointment error:', err);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Tạo lịch hẹn thất bại.');
     } finally {
       setCreating(false);
     }
   }
 
   async function submitEdit(appointmentId: string) {
+    if (!editForm.date) {
+      setError('Vui lòng chọn ngày hẹn.');
+      return;
+    }
+    setError('');
     setSaving(true);
     try {
       await api.put(`/appointments/${appointmentId}`, {
@@ -103,8 +113,8 @@ export default function ChatAppointments({ contactId, appointments, onRefresh }:
       });
       setEditingId(null);
       onRefresh();
-    } catch (err) {
-      console.error('Update appointment error:', err);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Cập nhật lịch hẹn thất bại.');
     } finally {
       setSaving(false);
     }
@@ -168,6 +178,8 @@ export default function ChatAppointments({ contactId, appointments, onRefresh }:
       )}
 
       {/* Appointment list */}
+      {error && <Alert color="warning" title={error} className="mb-2" />}
+
       {appointments.map((apt) => (
         <div
           key={apt.id}
