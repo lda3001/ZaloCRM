@@ -92,6 +92,27 @@ export async function chatRoutes(app: FastifyInstance) {
     return { conversations, total, page: parseInt(page), limit: parseInt(limit) };
   });
 
+  // Lightweight counter for the navigation badge. A conversation remains
+  // unreplied after it is opened/read and only leaves the count when a staff
+  // member actually sends a response.
+  app.get('/api/v1/conversations/unreplied-count', async (request: FastifyRequest) => {
+    const user = request.user!;
+    const where: any = { orgId: user.orgId, isReplied: false };
+
+    // Keep the badge consistent with the conversation list for members who
+    // only have access to a subset of the organisation's Zalo accounts.
+    if (user.role === 'member') {
+      const accessibleAccounts = await prisma.zaloAccountAccess.findMany({
+        where: { userId: user.id },
+        select: { zaloAccountId: true },
+      });
+      where.zaloAccountId = { in: accessibleAccounts.map((item) => item.zaloAccountId) };
+    }
+
+    const unrepliedCount = await prisma.conversation.count({ where });
+    return { unrepliedCount };
+  });
+
   // ── Get single conversation ──────────────────────────────────────────────
   app.get('/api/v1/conversations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;

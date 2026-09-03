@@ -31,6 +31,7 @@ import { OPEN_CHAT_EVENT } from '../utils/desktop-notify';
 import { startChatSocket, stopChatSocket } from '../services/chat-socket';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
+import { useUnrepliedCount } from '../hooks/use-unreplied-count';
 
 const navIcons: Record<string, ReactNode> = {
   '/': <SquaresFour size={22} weight="regular" />,
@@ -49,6 +50,7 @@ export default function DefaultLayout() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const unrepliedCount = useUnrepliedCount();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') !== 'false',
   );
@@ -128,8 +130,26 @@ export default function DefaultLayout() {
                 }`
               }
             >
-              <span className="shrink-0">{navIcons[page.path]}</span>
-              {!collapsed && <span className="truncate">{page.label}</span>}
+              <span className="relative shrink-0">
+                {navIcons[page.path]}
+                {collapsed && page.path === '/chat' && unrepliedCount > 0 && (
+                  <span
+                    className="absolute -right-2.5 -top-2.5 grid min-h-5 min-w-5 place-items-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white shadow-sm"
+                    aria-label={`${unrepliedCount} cuộc trò chuyện chưa trả lời`}
+                  >
+                    {unrepliedCount > 99 ? '99+' : unrepliedCount}
+                  </span>
+                )}
+              </span>
+              {!collapsed && <span className="min-w-0 flex-1 truncate">{page.label}</span>}
+              {!collapsed && page.path === '/chat' && unrepliedCount > 0 && (
+                <span
+                  className="grid min-h-5 min-w-5 shrink-0 place-items-center rounded-full bg-danger px-1.5 text-[11px] font-bold leading-none text-white"
+                  aria-label={`${unrepliedCount} cuộc trò chuyện chưa trả lời`}
+                >
+                  {unrepliedCount > 99 ? '99+' : unrepliedCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
