@@ -37,7 +37,7 @@ interface SearchResults {
 
 const emptyResults: SearchResults = { contacts: [], messages: [], appointments: [] };
 
-export default function GlobalSearch() {
+export default function GlobalSearch({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -84,6 +84,7 @@ export default function GlobalSearch() {
     setShowResults(false);
     setQuery('');
     navigate(path);
+    onNavigate?.();
   }
 
   function goToMessage(result: MessageResult) {
@@ -92,6 +93,7 @@ export default function GlobalSearch() {
     const conversationId = result.conversation?.id;
     if (conversationId) openChatConversation(conversationId);
     else navigate('/chat');
+    onNavigate?.();
   }
 
   function truncate(s: string | null, len: number): string {
@@ -103,7 +105,7 @@ export default function GlobalSearch() {
   }
 
   return (
-    <div ref={containerRef} className="relative w-72">
+    <div ref={containerRef} className="relative w-full min-w-0 md:w-56 lg:w-72">
       <Input
         value={query}
         onValueChange={debouncedSearch}
@@ -120,7 +122,7 @@ export default function GlobalSearch() {
       />
 
       {showResults && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-[24rem]">
+        <div className="relative z-50 mt-2 w-full md:absolute md:right-0 md:top-full md:w-96">
           <Card className="crm-card max-h-[400px] overflow-y-auto rounded-2xl border border-default shadow-sm">
             <CardBody className="p-0">
               {hasResults ? (

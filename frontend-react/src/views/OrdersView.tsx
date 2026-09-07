@@ -77,16 +77,18 @@ function StatCard({
   icon,
   value,
   label,
+  wide = false,
 }: {
   icon: ReactNode;
   value: string;
   label: string;
+  wide?: boolean;
 }) {
   return (
-    <Card className="rounded-2xl border border-default bg-content1 shadow-sm">
+    <Card className={`rounded-2xl border border-default bg-content1 shadow-sm ${wide ? 'col-span-2 md:col-span-1' : ''}`}>
       <CardBody className="flex flex-col items-center gap-2 px-4 py-5 text-center">
         {icon}
-        <div className="tabular-nums text-xl font-semibold text-foreground">{value}</div>
+        <div className="tabular-nums max-w-full break-words text-base font-semibold text-foreground sm:text-xl" style={{ overflowWrap: 'anywhere' }}>{value}</div>
         <div className="text-xs text-foreground-600">{label}</div>
       </CardBody>
     </Card>
@@ -232,11 +234,13 @@ export default function OrdersView() {
           icon={<CurrencyCircleDollar size={24} weight="regular" className="text-secondary" />}
           value={formatVND(stats?.totalRevenue ?? 0)}
           label="Doanh thu"
+          wide
         />
         <StatCard
           icon={<CalendarBlank size={24} weight="regular" className="text-warning" />}
           value={formatVND(stats?.todayRevenue ?? 0)}
           label="Doanh thu hôm nay"
+          wide
         />
       </div>
 

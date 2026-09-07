@@ -217,6 +217,64 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 .dark ::-webkit-scrollbar-thumb { background: #2c3746; border-radius: 99px; border: 2px solid #0b0f14; }
 .dark ::-webkit-scrollbar-track { background: transparent; }
 
+.chat-canvas,
+.chat-message-list,
+.chat-list-shell {
+  min-height: 0;
+  min-width: 0;
+}
+
+.chat-toolbar { flex-shrink: 0; }
+.chat-message-bubble { overflow-wrap: anywhere; }
+.chat-message-bubble audio { width: 100%; min-width: 0; }
+
+@media (max-width: 767px) {
+  .app-shell { height: var(--mobile-app-height, 100dvh); }
+  .app-header {
+    padding-top: max(4px, env(safe-area-inset-top));
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+  }
+  .app-main {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .app-main:has(.chat-workspace) { padding: 0; }
+  .chat-toolbar--composer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 6px 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .chat-composer-input { grid-column: 1 / -1; grid-row: 1; }
+  .chat-composer-actions { grid-column: 1; grid-row: 2; padding-bottom: 0; }
+  .chat-composer-send { grid-column: 2; grid-row: 2; }
+  .chat-toolbar--composer button,
+  .chat-toolbar--header button[data-slot='base'],
+  .chat-panel-header button,
+  .app-header button { min-height: 44px; }
+  .chat-composer-actions button { min-width: 44px; }
+  .chat-toolbar--header { gap: 4px; padding-inline: 8px; }
+  .chat-message-list { overscroll-behavior-y: contain; }
+  .chat-picker { max-height: min(420px, 55dvh); overflow-y: auto; }
+  .mobile-chat-details {
+    height: 100dvh;
+    max-height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* Keep tables scrollable within their cards, not the entire page. */
+  .app-main [data-slot='base'],
+  .app-main [data-slot='body'],
+  .app-main [data-slot='wrapper'] { min-width: 0; max-width: 100%; }
+  .app-main [data-slot='wrapper']:has(table) { overflow-x: auto; }
+  .app-main table { min-width: 640px; }
+  .app-main [data-slot='tabList'] { max-width: 100%; overflow-x: auto; }
+  .app-main [data-slot='pagination'] { max-width: 100%; overflow-x: auto; }
+  input:not([type='checkbox']):not([type='radio']), textarea, select {
+    font-size: 16px !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

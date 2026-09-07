@@ -123,7 +123,7 @@ export default function ContactsView() {
       {error && <Alert color="danger" title={error} />}
 
       {loading ? (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <Skeleton key={i} className="h-40 rounded-2xl" />
           ))}
@@ -133,13 +133,13 @@ export default function ContactsView() {
           Không có khách hàng
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
           {contacts.map((contact) => (
             <button
               key={contact.id}
               type="button"
               onClick={() => onRowClick(contact)}
-              className="crm-card crm-card-interactive group flex flex-col items-center gap-1 rounded-2xl border border-default bg-content1 p-4 text-center hover:bg-content2"
+              className="crm-card crm-card-interactive group flex min-w-0 flex-col items-center gap-1 rounded-2xl border border-default bg-content1 p-4 text-center hover:bg-content2"
             >
               <Avatar
                 src={contact.avatarUrl ?? undefined}
@@ -163,7 +163,7 @@ export default function ContactsView() {
                   </Chip>
                 )}
               </div>
-              <span className="mt-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+              <span className="mt-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-primary transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100">
                 <ChatsCircle size={13} /> Xem chi tiết và nhắn tin
               </span>
             </button>

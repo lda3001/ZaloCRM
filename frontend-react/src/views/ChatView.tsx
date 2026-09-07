@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Modal, ModalContent } from '@heroui/react';
 import ConversationList from '../components/chat/ConversationList';
 import MessageThread from '../components/chat/MessageThread';
 import ChatContactPanel from '../components/chat/ChatContactPanel';
@@ -58,12 +59,12 @@ export default function ChatView() {
 
   // Mobile: list OR thread (desktop always shows both).
   const [isMobile, setIsMobile] = useState(
-    () => window.matchMedia('(max-width: 768px)').matches,
+    () => window.matchMedia('(max-width: 767px)').matches,
   );
   const [mobileView, setMobileView] = useState<'list' | 'thread'>('list');
 
   useEffect(() => {
-    const mq = window.matchMedia('(max-width: 768px)');
+    const mq = window.matchMedia('(max-width: 767px)');
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
@@ -181,7 +182,7 @@ export default function ChatView() {
   const threadVisible = isMobile ? mobileView === 'thread' : true;
 
   return (
-    <div className="chat-workspace -m-6 flex h-[calc(100vh-56px)]">
+    <div className="chat-workspace flex h-full min-h-0 min-w-0 overflow-hidden">
       {/* Conversation list — resizable */}
       {leftPanelVisible && (
         <aside
@@ -213,7 +214,7 @@ export default function ChatView() {
 
       {/* Message thread — flexible center */}
       {threadVisible && (
-        <section className="flex min-w-[300px] flex-1 flex-col" style={{ minWidth: isMobile ? 0 : 300 }}>
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           <MessageThread
             conversation={selectedConv}
             messages={messages}
@@ -269,6 +270,17 @@ export default function ChatView() {
             />
           ) : null}
         </aside>
+      )}
+      {isMobile && selectedConv && (
+        <Modal isOpen={showContactPanel} onOpenChange={setShowContactPanel} size="full" hideCloseButton aria-label={selectedConv.threadType === 'group' ? 'Thông tin nhóm' : 'Thông tin khách hàng'}>
+          <ModalContent className="mobile-chat-details">
+            {selectedConv.threadType === 'group' ? (
+              <ChatGroupPanel conversation={selectedConv} onClose={() => setShowContactPanel(false)} />
+            ) : (
+              <ChatContactPanel key={selectedConv.id} conversationId={selectedConv.id} contactId={selectedConv.contact?.id ?? null} contact={selectedConv.contact} onClose={() => setShowContactPanel(false)} onSaved={handleSaved} onStartChat={() => setShowContactPanel(false)} />
+            )}
+          </ModalContent>
+        </Modal>
       )}
     </div>
   );

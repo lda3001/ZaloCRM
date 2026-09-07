@@ -1462,7 +1462,7 @@ function MessageThread({
           minRows={1}
           maxRows={3}
           variant="bordered"
-          className="flex-1"
+          className="chat-composer-input min-w-0 flex-1"
           onPaste={handlePaste}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1471,7 +1471,7 @@ function MessageThread({
             }
           }}
         />
-        <div className="flex items-center gap-1 pb-1">
+        <div className="chat-composer-actions flex items-center gap-1 pb-1">
           <Button
             isIconOnly
             size="sm"
@@ -1517,13 +1517,14 @@ function MessageThread({
           isLoading={sending}
           isDisabled={!inputText.trim() && pendingFiles.length === 0}
           aria-label="Gửi"
+          className="chat-composer-send"
           onPress={() => void handleSend()}
         >
           <PaperPlaneTilt size={18} />
         </Button>
 
         {picker && (
-          <div className="absolute bottom-full right-2 z-30 mb-2 w-[420px] max-w-[calc(100%-1rem)] rounded-2xl border border-default bg-background p-3 shadow-xl">
+          <div className="chat-picker absolute bottom-full right-2 z-30 mb-2 w-[420px] max-w-[calc(100%-1rem)] rounded-2xl border border-default bg-background p-3 shadow-xl">
             <div className="mb-3 flex rounded-xl bg-default-100 p-1">
               <button
                 type="button"
@@ -1579,7 +1580,7 @@ function MessageThread({
                       ? 'Gần đây'
                       : EMOJI_GROUPS.find((group) => group.id === emojiGroup)?.label}
                   </div>
-                  <div className="grid grid-cols-9 gap-1">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(36px,1fr))] gap-1">
                     {(emojiGroup === 'recent'
                       ? recentEmojis
                       : EMOJI_GROUPS.find((group) => group.id === emojiGroup)?.emojis || []

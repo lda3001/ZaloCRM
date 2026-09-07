@@ -78,7 +78,7 @@ export default function NotificationBell() {
       </DropdownTrigger>
       <DropdownMenu
         aria-label="Thông báo"
-        className="max-h-96 w-80 overflow-y-auto"
+        className="max-h-96 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto"
         onAction={(key) => handleClick(String(key))}
       >
         {notifications.length === 0 ? (

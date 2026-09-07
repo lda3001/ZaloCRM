@@ -8,6 +8,10 @@ import {
   DropdownItem,
   DropdownMenu,
   DropdownTrigger,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
 } from '@heroui/react';
 import {
   CalendarCheck,
@@ -16,6 +20,7 @@ import {
   CaretDown,
   ChartPie,
   ChatText,
+  List,
   DeviceMobile,
   PlugsConnected,
   ShoppingCart,
@@ -56,11 +61,32 @@ export default function DefaultLayout() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const unrepliedCount = useUnrepliedCount();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') !== 'false',
   );
 
   const currentPage = appPages.find((p) => p.path === location.pathname);
+
+  useEffect(() => {
+    // Follow the visible area when the mobile keyboard or browser chrome opens.
+    const viewport = window.visualViewport;
+    const updateHeight = () => {
+      if (viewport && viewport.scale === 1 && window.innerWidth < 768) {
+        document.documentElement.style.setProperty('--mobile-app-height', `${viewport.height}px`);
+      } else {
+        document.documentElement.style.removeProperty('--mobile-app-height');
+      }
+    };
+    updateHeight();
+    viewport?.addEventListener('resize', updateHeight);
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      viewport?.removeEventListener('resize', updateHeight);
+      window.removeEventListener('resize', updateHeight);
+      document.documentElement.style.removeProperty('--mobile-app-height');
+    };
+  }, []);
 
   // The chat socket lives for the whole session, not just while the Chat
   // screen is mounted: start it on login, stop it on logout.
@@ -129,11 +155,11 @@ export default function DefaultLayout() {
   };
 
   return (
-    <div className="app-shell flex h-screen w-full bg-background text-foreground">
+    <div className="app-shell flex h-dvh w-full overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
       <aside
         style={{ width: collapsed ? 64 : 264 }}
-        className="app-sidebar flex shrink-0 flex-col border-r border-default bg-content1 transition-[width] duration-200"
+        className="app-sidebar hidden shrink-0 flex-col border-r border-default bg-content1 transition-[width] duration-200 md:flex"
       >
         <div className="flex h-14 items-center justify-center gap-2 px-4">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-300 text-base font-extrabold text-white shadow-lg shadow-primary/25 dark:text-[#06111f]">
@@ -204,21 +230,27 @@ export default function DefaultLayout() {
       </aside>
 
       {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Top bar */}
-        <header className="app-header z-20 flex h-14 shrink-0 items-center gap-4 border-b border-default px-4">
-          <h1 className="min-w-0 truncate text-base font-semibold">
+        <header className="app-header z-20 flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-default px-2 py-1 md:h-14 md:flex-nowrap md:gap-4 md:px-4 md:py-0">
+          <Button isIconOnly variant="light" className="md:hidden" aria-label="Mở menu điều hướng" onPress={() => setMobileMenuOpen(true)}>
+            <span className="relative">
+              <List size={24} />
+              {unrepliedCount > 0 && <span aria-label={`${unrepliedCount} cuộc trò chuyện chưa trả lời`} className="absolute -right-2 -top-2 rounded-full bg-danger px-1 text-[10px] font-bold leading-4 text-white">{unrepliedCount > 99 ? '99+' : unrepliedCount}</span>}
+            </span>
+          </Button>
+          <h1 className="min-w-0 flex-1 truncate text-base font-semibold md:flex-none">
             {currentPage?.title ?? 'ZaloCRM'}
           </h1>
 
-          <div className="ml-auto flex items-center gap-2">
-            <GlobalSearch />
+          <div className="ml-auto flex items-center gap-1 md:gap-2">
+            <div className="hidden md:block"><GlobalSearch /></div>
             <NotificationBell />
             <ThemeToggle />
 
             <Dropdown placement="bottom-end">
               <DropdownTrigger>
-                <Button variant="light" className="h-9 gap-2 px-2">
+                <Button variant="light" aria-label="Tài khoản" className="h-10 min-w-10 gap-1 px-1 md:gap-2 md:px-2">
                   <Avatar
                     name={user?.fullName || '?'}
                     size="sm"
@@ -227,7 +259,7 @@ export default function DefaultLayout() {
                   <span className="hidden max-w-40 truncate text-sm font-medium md:inline">
                     {user?.fullName}
                   </span>
-                  <CaretDown size={14} />
+                  <CaretDown size={14} className="hidden md:block" />
                 </Button>
               </DropdownTrigger>
               <DropdownMenu
@@ -257,10 +289,28 @@ export default function DefaultLayout() {
         </header>
 
         {/* Main content */}
-        <main className="app-main flex-1 overflow-y-auto p-6">
+        <main className={`app-main min-h-0 min-w-0 flex-1 ${location.pathname === '/chat' ? 'overflow-hidden p-0' : 'overflow-y-auto p-3 md:p-6'}`}>
           <Outlet />
         </main>
       </div>
+      <Modal isOpen={mobileMenuOpen} onOpenChange={setMobileMenuOpen} placement="center" scrollBehavior="inside" aria-label="Menu điều hướng">
+        <ModalContent>
+          <ModalHeader>Menu ZaloCRM</ModalHeader>
+          <ModalBody className="gap-3 pb-5">
+            <GlobalSearch onNavigate={() => setMobileMenuOpen(false)} />
+            <nav aria-label="Điều hướng trên điện thoại" className="grid grid-cols-2 gap-2">
+              {appPages.map((page) => (
+                <NavLink key={page.path} to={page.path} end={page.path === '/'} onClick={() => setMobileMenuOpen(false)}
+                  className={({ isActive }) => `flex min-h-14 items-center gap-2 rounded-xl p-3 text-sm ${isActive ? 'bg-primary-50 text-primary' : 'bg-default-100'}`}>
+                  <span className="shrink-0">{navIcons[page.path]}</span>
+                  <span>{page.label}</span>
+                  {page.path === '/chat' && unrepliedCount > 0 && <span className="ml-auto rounded-full bg-danger px-1.5 text-xs text-white">{unrepliedCount > 99 ? '99+' : unrepliedCount}</span>}
+                </NavLink>
+              ))}
+            </nav>
+          </ModalBody>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }
