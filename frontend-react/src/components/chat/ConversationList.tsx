@@ -18,6 +18,7 @@ interface Props {
   onLoadMore?: () => void;
   onFilterAccount: (accountId: string | null) => void;
   onFilterThread: (threadType: ConversationTypeFilter) => void;
+  onOpenWindow?: (id: string) => void;
 }
 
 interface AccountOption {
@@ -119,6 +120,7 @@ export default function ConversationList({
   onLoadMore,
   onFilterAccount,
   onFilterThread,
+  onOpenWindow,
 }: Props) {
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -222,6 +224,8 @@ export default function ConversationList({
               key={conv.id}
               type="button"
               onClick={() => onSelect(conv.id)}
+              onDoubleClick={() => onOpenWindow?.(conv.id)}
+              title={onOpenWindow ? 'Nhấp đúp để mở cửa sổ chat riêng' : undefined}
               className={`chat-conversation-row flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors ${
                 isActive
                   ? 'chat-conversation-row--active bg-primary-50 text-primary-700 shadow-[inset_3px_0_0_#0868e8] dark:bg-primary-500/15 dark:text-foreground dark:shadow-none'

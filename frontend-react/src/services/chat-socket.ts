@@ -66,6 +66,7 @@ const removeListeners = new Set<RemovedListener>();
 const reactionListeners = new Set<ReactionListener>();
 let socket: Socket | null = null;
 let activeConversationId: string | null = null;
+const floatingActiveConversationIds = new Set<string>();
 
 function messagePreview(m: ChatSocketMessage): string {
   // Content-type first: images/files may carry empty or JSON-stringified content.
@@ -90,7 +91,8 @@ export function startChatSocket(): void {
     // has focus on exactly this conversation.
     if (message.senderType === 'contact' && !message.isDeleted) {
       const appFocused = typeof document !== 'undefined' && document.hasFocus();
-      const viewingThis = conversationId === activeConversationId;
+      const viewingThis = conversationId === activeConversationId
+        || floatingActiveConversationIds.has(conversationId);
       if (!viewingThis || !appFocused) {
         // Per-conversation mute: no toast, no chime.
         if (!isConversationMuted(conversationId)) {
@@ -137,6 +139,7 @@ export function stopChatSocket(): void {
   removeListeners.clear();
   reactionListeners.clear();
   activeConversationId = null;
+  floatingActiveConversationIds.clear();
 }
 
 export function onChatMessage(fn: MessageListener): () => void {
@@ -162,4 +165,10 @@ export function onChatReaction(fn: ReactionListener): () => void {
 /** Which conversation is currently open in the UI (used to suppress own-conv toasts). */
 export function setActiveConversation(id: string | null): void {
   activeConversationId = id;
+}
+
+/** Register an expanded floating chat so it does not produce duplicate desktop notifications. */
+export function setFloatingConversationActive(id: string, active: boolean): void {
+  if (active) floatingActiveConversationIds.add(id);
+  else floatingActiveConversationIds.delete(id);
 }

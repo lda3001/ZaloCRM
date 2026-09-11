@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Modal, ModalContent } from '@heroui/react';
 import ConversationList from '../components/chat/ConversationList';
 import MessageThread from '../components/chat/MessageThread';
+import FloatingChatWindow from '../components/chat/FloatingChatWindow';
 import ChatContactPanel from '../components/chat/ChatContactPanel';
 import ChatGroupPanel from '../components/chat/ChatGroupPanel';
 import { useChat } from '../hooks/use-chat';
@@ -67,6 +68,8 @@ export default function ChatView() {
     () => window.matchMedia('(max-width: 767px)').matches,
   );
   const [mobileView, setMobileView] = useState<'list' | 'thread'>('list');
+  const [floatingChats, setFloatingChats] = useState<typeof conversations>([]);
+  const [minimizedChatIds, setMinimizedChatIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
@@ -179,6 +182,49 @@ export default function ChatView() {
     if (isMobile) setMobileView('thread');
   }
 
+  function openFloatingChat(conversationId: string) {
+    if (isMobile) {
+      handleSelect(conversationId);
+      return;
+    }
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    setFloatingChats((current) => current.some((item) => item.id === conversationId)
+      ? current.map((item) => item.id === conversationId ? conversation : item)
+      : [...current, conversation]);
+    setMinimizedChatIds((current) => {
+      if (!current.has(conversationId)) return current;
+      const next = new Set(current);
+      next.delete(conversationId);
+      return next;
+    });
+  }
+
+  function closeFloatingChat(conversationId: string) {
+    setFloatingChats((current) => current.filter((item) => item.id !== conversationId));
+    setMinimizedChatIds((current) => {
+      const next = new Set(current);
+      next.delete(conversationId);
+      return next;
+    });
+  }
+
+  function toggleFloatingChat(conversationId: string) {
+    setMinimizedChatIds((current) => {
+      const next = new Set(current);
+      if (next.has(conversationId)) next.delete(conversationId);
+      else next.add(conversationId);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    setFloatingChats((current) => current.map((opened) => (
+      conversations.find((conversation) => conversation.id === opened.id) || opened
+    )));
+  }, [conversations]);
+
   function handleSaved() {
     void fetchConversations();
   }
@@ -207,6 +253,7 @@ export default function ChatView() {
             onLoadMore={() => void loadMoreConversations()}
             onFilterAccount={handleFilterAccount}
             onFilterThread={handleFilterThread}
+            onOpenWindow={!isMobile ? openFloatingChat : undefined}
           />
           {!isMobile && (
             <div
@@ -248,6 +295,9 @@ export default function ChatView() {
             onRefreshMessages={() => {
               if (selectedConvId) void selectConversation(selectedConvId);
             }}
+            onOpenWindow={!isMobile && selectedConvId
+              ? () => openFloatingChat(selectedConvId)
+              : undefined}
             onBack={isMobile ? () => setMobileView('list') : undefined}
           />
         </section>
@@ -292,6 +342,22 @@ export default function ChatView() {
             )}
           </ModalContent>
         </Modal>
+      )}
+      {!isMobile && floatingChats.length > 0 && (
+        <div className="multi-chat-dock" aria-label="Các cửa sổ chat đang mở">
+          {[...floatingChats].reverse().map((conversation) => (
+            <FloatingChatWindow
+              key={conversation.id}
+              conversation={conversation}
+              conversations={conversations}
+              minimized={minimizedChatIds.has(conversation.id)}
+              onClose={() => closeFloatingChat(conversation.id)}
+              onToggleMinimize={() => toggleFloatingChat(conversation.id)}
+              onOpenConversation={openFloatingChat}
+              onRefreshConversations={fetchConversations}
+            />
+          ))}
+        </div>
       )}
     </div>
   );

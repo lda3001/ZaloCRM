@@ -12,6 +12,7 @@ import {
   FileText,
   Bell,
   BellSlash,
+  Browsers,
   IdentificationCard,
   Image as ImageIcon,
   Paperclip,
@@ -73,6 +74,9 @@ interface Props {
   onOpenConversation?: (conversationId: string) => void;
   onBack?: () => void;
   onRefreshMessages?: () => void;
+  onOpenWindow?: () => void;
+  hideHeader?: boolean;
+  inputId?: string;
 }
 
 const MESSAGE_REACTION_OPTIONS = [
@@ -715,6 +719,9 @@ function MessageThread({
   onOpenConversation,
   onBack,
   onRefreshMessages,
+  onOpenWindow,
+  hideHeader = false,
+  inputId = 'chat-message-input',
 }: Props) {
   const groupSenderIds = Array.from(new Set(
     messages
@@ -1294,7 +1301,7 @@ function MessageThread({
     setActiveActionMessageId(null);
     setActiveReactionMessageId(null);
     setMobileActionMessageId(null);
-    window.setTimeout(() => document.getElementById('chat-message-input')?.focus(), 0);
+    window.setTimeout(() => document.getElementById(inputId)?.focus(), 0);
   }
 
   function beginForward(message: Message) {
@@ -1467,7 +1474,7 @@ function MessageThread({
   return (
     <div className="chat-canvas relative flex h-full flex-1 flex-col">
       {/* Header */}
-      <div className="chat-toolbar chat-toolbar--header flex items-center gap-2 border-b border-default px-3 py-2">
+      {!hideHeader && <div className="chat-toolbar chat-toolbar--header flex items-center gap-2 border-b border-default px-3 py-2">
         {onBack && (
           <Button
             isIconOnly
@@ -1539,6 +1546,18 @@ function MessageThread({
             <ArrowsClockwise size={20} />
           </Button>
         )}
+        {onOpenWindow && (
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            aria-label="Mở cửa sổ chat riêng"
+            title="Mở cửa sổ chat riêng"
+            onPress={onOpenWindow}
+          >
+            <Browsers size={20} />
+          </Button>
+        )}
         <Button
           isIconOnly
           size="sm"
@@ -1569,7 +1588,7 @@ function MessageThread({
             <IdentificationCard size={20} weight={showContactPanel ? 'fill' : 'regular'} />
           )}
         </Button>
-      </div>
+      </div>}
 
       {/* Messages */}
       <div
@@ -2021,7 +2040,7 @@ function MessageThread({
           }}
         />
         <Textarea
-          id="chat-message-input"
+          id={inputId}
           placeholder={pendingFiles.length > 0 ? 'Thêm chú thích (tuỳ chọn)...' : 'Nhập tin nhắn...'}
           value={inputText}
           onValueChange={setInputText}
