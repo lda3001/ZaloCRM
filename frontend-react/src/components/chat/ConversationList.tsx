@@ -231,7 +231,7 @@ export default function ConversationList({
               }`}
             >
               <Avatar
-                src={conv.threadType === 'group' ? undefined : conv.contact?.avatarUrl ?? undefined}
+                src={conv.contact?.avatarUrl ?? undefined}
                 icon={
                   conv.threadType === 'group' ? (
                     <UsersThree size={20} />

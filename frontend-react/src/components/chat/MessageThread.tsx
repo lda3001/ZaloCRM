@@ -1320,7 +1320,7 @@ function MessageThread({
           }}
         >
           <Avatar
-            src={conversation.threadType === 'group' ? undefined : conversation.contact?.avatarUrl ?? undefined}
+            src={conversation.contact?.avatarUrl ?? undefined}
             name={conversation.contact?.fullName || undefined}
             icon={
               conversation.threadType === 'group' ? <UsersThree size={18} /> : <User size={18} />

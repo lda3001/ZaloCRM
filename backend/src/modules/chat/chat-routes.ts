@@ -17,6 +17,12 @@ type QueryParams = Record<string, string>;
 const GROUP_INFO_CACHE_TTL_MS = 10 * 60_000;
 const GROUP_INFO_CACHE_MAX_ENTRIES = 300;
 const groupInfoCache = new Map<string, { payload: any; cachedAt: number }>();
+const GROUP_AVATAR_CACHE_MAX_ENTRIES = 1_000;
+const groupAvatarCache = new Map<string, {
+  avatarUrl: string | null;
+  name: string | null;
+  cachedAt: number;
+}>();
 const MESSAGE_REACTIONS = new Set(['/-strong', '/-heart', ':>', ':o', ':-((', ':-h']);
 
 interface StoredMessageReaction {
@@ -68,6 +74,96 @@ function rememberGroupInfo(key: string, payload: any): void {
     if (!oldestKey) break;
     groupInfoCache.delete(oldestKey);
   }
+}
+
+function groupAvatarCacheKey(accountId: string, groupId: string): string {
+  return `${accountId}:${groupId}`;
+}
+
+function freshGroupAvatar(accountId: string, groupId: string) {
+  const key = groupAvatarCacheKey(accountId, groupId);
+  const entry = groupAvatarCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt >= GROUP_INFO_CACHE_TTL_MS) {
+    groupAvatarCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function rememberGroupAvatar(
+  accountId: string,
+  groupId: string,
+  avatarUrl: string | null,
+  name: string | null,
+): void {
+  const key = groupAvatarCacheKey(accountId, groupId);
+  groupAvatarCache.delete(key);
+  groupAvatarCache.set(key, { avatarUrl, name, cachedAt: Date.now() });
+  while (groupAvatarCache.size > GROUP_AVATAR_CACHE_MAX_ENTRIES) {
+    const oldestKey = groupAvatarCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    groupAvatarCache.delete(oldestKey);
+  }
+}
+
+/** Load every visible group's avatar in batches, at most once per cache TTL. */
+async function hydrateGroupConversationAvatars(conversations: any[]): Promise<void> {
+  const pendingByAccount = new Map<string, any[]>();
+
+  for (const conversation of conversations) {
+    if (conversation.threadType !== 'group' || !conversation.externalThreadId) continue;
+    const cached = freshGroupAvatar(conversation.zaloAccountId, conversation.externalThreadId);
+    if (cached) {
+      if (conversation.contact && cached.avatarUrl) conversation.contact.avatarUrl = cached.avatarUrl;
+      if (conversation.contact && cached.name) conversation.contact.fullName = cached.name;
+      continue;
+    }
+    const pending = pendingByAccount.get(conversation.zaloAccountId) ?? [];
+    pending.push(conversation);
+    pendingByAccount.set(conversation.zaloAccountId, pending);
+  }
+
+  await Promise.all(Array.from(pendingByAccount.entries()).map(async ([accountId, accountConversations]) => {
+    const instance = zaloPool.getInstance(accountId);
+    if (!instance?.api) return;
+
+    for (let index = 0; index < accountConversations.length; index += 50) {
+      const batch = accountConversations.slice(index, index + 50);
+      const groupIds = batch.map((conversation) => conversation.externalThreadId as string);
+      try {
+        const response = await instance.api.getGroupInfo(groupIds);
+        const groups = response?.gridInfoMap ?? {};
+        const repairs: Promise<unknown>[] = [];
+
+        for (const conversation of batch) {
+          const group = groups[conversation.externalThreadId]
+            ?? Object.values(groups).find((item: any) => String(item?.groupId) === conversation.externalThreadId) as any;
+          const avatarUrl = group?.fullAvt || group?.avt || conversation.contact?.avatarUrl || null;
+          const name = group?.name || conversation.contact?.fullName || null;
+          rememberGroupAvatar(accountId, conversation.externalThreadId, avatarUrl, name);
+
+          if (!conversation.contact) continue;
+          const avatarChanged = Boolean(avatarUrl && avatarUrl !== conversation.contact.avatarUrl);
+          const nameChanged = Boolean(name && name !== conversation.contact.fullName);
+          if (avatarUrl) conversation.contact.avatarUrl = avatarUrl;
+          if (name) conversation.contact.fullName = name;
+          if (conversation.contact.id && (avatarChanged || nameChanged)) {
+            repairs.push(prisma.contact.update({
+              where: { id: conversation.contact.id },
+              data: {
+                ...(avatarChanged ? { avatarUrl } : {}),
+                ...(nameChanged ? { fullName: name } : {}),
+              },
+            }));
+          }
+        }
+        await Promise.all(repairs);
+      } catch (err) {
+        logger.warn(`[chat] group avatar batch failed for account ${accountId}: ${String(err)}`);
+      }
+    }
+  }));
 }
 
 export async function chatRoutes(app: FastifyInstance) {
@@ -123,6 +219,8 @@ export async function chatRoutes(app: FastifyInstance) {
       }),
       prisma.conversation.count({ where }),
     ]);
+
+    await hydrateGroupConversationAvatars(conversations);
 
     return { conversations, total, page: parseInt(page), limit: parseInt(limit) };
   });
