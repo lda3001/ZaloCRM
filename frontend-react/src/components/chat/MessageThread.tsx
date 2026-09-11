@@ -21,6 +21,10 @@ import {
   Sticker,
   Trash,
   ArrowCounterClockwise,
+  ArrowBendUpLeft,
+  CheckCircle,
+  MagnifyingGlass,
+  ShareFat,
   VideoCamera,
   User,
   UsersThree,
@@ -42,6 +46,7 @@ import { getGroupInfoCached } from '../../services/group-info-cache';
 
 interface Props {
   conversation: Conversation | null;
+  conversations: Conversation[];
   messages: Message[];
   loading: boolean;
   loadingOlder?: boolean;
@@ -54,10 +59,14 @@ interface Props {
     content: string,
     opts?: import('../../hooks/use-chat').SendMessageOptions,
   ) => Promise<SendMessageResult>;
-  onSendFiles?: (files: File[], caption?: string) => Promise<boolean>;
+  onSendFiles?: (files: File[], caption?: string, replyToMessageId?: string) => Promise<boolean>;
   onDeleteMessage?: (messageId: string) => Promise<SendMessageResult>;
   onRecallMessage?: (messageId: string) => Promise<SendMessageResult>;
   onReactMessage?: (messageId: string, icon: string) => Promise<SendMessageResult>;
+  onForwardMessage?: (
+    messageId: string,
+    targetConversationIds: string[],
+  ) => Promise<SendMessageResult & { forwarded?: number; failed?: number }>;
   onLoadOlder?: () => Promise<boolean>;
   onToggleContactPanel: () => void;
   onOpenContactPanel?: () => void;
@@ -109,13 +118,14 @@ function MessageReactionPicker({
 }) {
   return (
     <div className="flex items-center justify-between gap-1">
-      {MESSAGE_REACTION_OPTIONS.map((reaction) => (
+      {MESSAGE_REACTION_OPTIONS.map((reaction, index) => (
         <button
           key={reaction.icon}
           type="button"
-          className={`flex h-11 w-11 items-center justify-center rounded-full text-2xl transition-transform hover:scale-110 hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+          className={`chat-reaction-option flex h-11 w-11 items-center justify-center rounded-full text-2xl hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
             selectedIcon === reaction.icon ? 'bg-primary/15 ring-2 ring-primary/50' : ''
           }`}
+          style={{ animationDelay: `${index * 28}ms` }}
           aria-label={selectedIcon === reaction.icon ? `Gỡ ${reaction.label}` : reaction.label}
           title={selectedIcon === reaction.icon ? `Gỡ ${reaction.label}` : reaction.label}
           disabled={disabled}
@@ -131,16 +141,40 @@ function MessageReactionPicker({
 function MessageActionMenu({
   isSelf,
   isDeleted,
+  onReply,
+  onForward,
   onDelete,
   onRecall,
 }: {
   isSelf: boolean;
   isDeleted: boolean;
+  onReply: () => void;
+  onForward: () => void;
   onDelete: () => void;
   onRecall: () => void;
 }) {
   return (
     <div className="w-full">
+      {!isDeleted && (
+        <>
+          <button
+            type="button"
+            className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            onClick={onReply}
+          >
+            <ArrowBendUpLeft size={20} />
+            Trả lời
+          </button>
+          <button
+            type="button"
+            className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            onClick={onForward}
+          >
+            <ShareFat size={20} />
+            Chuyển tiếp
+          </button>
+        </>
+      )}
       <button
         type="button"
         className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-danger transition-colors hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
@@ -165,6 +199,32 @@ function MessageActionMenu({
 
 function formatMessageTime(d: string): string {
   return new Date(d).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function replyPreviewText(reply: Message['replyTo']): string {
+  if (!reply) return '';
+  const labels: Record<string, string> = {
+    image: '[Hình ảnh]',
+    video: '[Video]',
+    voice: '[Tin nhắn thoại]',
+    audio: '[Tin nhắn thoại]',
+    gif: '[GIF]',
+    sticker: '[Sticker]',
+    file: '[Tệp đính kèm]',
+    location: '[Vị trí]',
+  };
+  if (reply.contentType !== 'text') {
+    let title = '';
+    try {
+      const parsed = JSON.parse(reply.content || '{}');
+      title = typeof parsed?.title === 'string' ? parsed.title.trim() : '';
+    } catch {
+      // The stored value can be a plain media URL.
+    }
+    return title || labels[reply.contentType] || '[Tin nhắn]';
+  }
+  const value = (reply.content || '').trim();
+  return value.length > 120 ? `${value.slice(0, 120)}…` : value || '[Tin nhắn]';
 }
 
 /** 'Hôm nay' / 'Hôm qua' / 'T4 26/08/2026' — same style as Zalo. */
@@ -634,6 +694,7 @@ function normalizeStickers(arr: any[]): StickerItem[] {
 
 function MessageThread({
   conversation,
+  conversations,
   messages,
   loading,
   loadingOlder = false,
@@ -647,6 +708,7 @@ function MessageThread({
   onDeleteMessage,
   onRecallMessage,
   onReactMessage,
+  onForwardMessage,
   onLoadOlder,
   onToggleContactPanel,
   onOpenContactPanel,
@@ -671,6 +733,10 @@ function MessageThread({
   const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
   const [activeReactionMessageId, setActiveReactionMessageId] = useState<string | null>(null);
   const [mobileActionMessageId, setMobileActionMessageId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
+  const [forwardSearch, setForwardSearch] = useState('');
+  const [selectedForwardIds, setSelectedForwardIds] = useState<Set<string>>(new Set());
   const [confirmMessageAction, setConfirmMessageAction] = useState<{
     messageId: string;
     action: 'delete' | 'recall';
@@ -684,12 +750,19 @@ function MessageThread({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const longPressRef = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const reactionHoverTimerRef = useRef<number | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const suppressMessageClickRef = useRef(false);
   useEffect(() => {
     setPendingFiles([]);
     setActiveActionMessageId(null);
     setActiveReactionMessageId(null);
     setMobileActionMessageId(null);
+    setReplyingTo(null);
+    setForwardingMessageId(null);
+    setForwardSearch('');
+    setSelectedForwardIds(new Set());
     setConfirmMessageAction(null);
     if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
     longPressRef.current = null;
@@ -698,6 +771,8 @@ function MessageThread({
 
   useEffect(() => () => {
     if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
+    if (reactionHoverTimerRef.current) window.clearTimeout(reactionHoverTimerRef.current);
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -873,6 +948,14 @@ function MessageThread({
 
   async function sendStickerItem(st: StickerItem) {
     if (sending) return;
+    if (replyingTo) {
+      setSyncSnack({
+        show: true,
+        text: 'Zalo chưa hỗ trợ trả lời bằng sticker. Hãy gửi chữ, ảnh hoặc file.',
+        color: 'warning',
+      });
+      return;
+    }
     const result = await onSend('', {
       contentType: 'sticker',
       sticker: { id: st.id, catId: st.catId, type: st.type },
@@ -953,9 +1036,11 @@ function MessageThread({
     }
     if (!inputText.trim()) return;
     const draft = inputText;
-    const result = await onSend(draft);
+    const replyToMessageId = replyingTo?.id;
+    const result = await onSend(draft, { replyToMessageId });
     if (result.ok) {
       setInputText((current) => (current === draft ? '' : current));
+      if (replyingTo?.id === replyToMessageId) setReplyingTo(null);
     } else {
       setSyncSnack({
         show: true,
@@ -1020,10 +1105,12 @@ function MessageThread({
     if (!onSendFiles || pendingFiles.length === 0 || sending) return;
     const files = pendingFiles;
     const caption = inputText.trim();
-    const ok = await onSendFiles(files, caption || undefined);
+    const replyToMessageId = replyingTo?.id;
+    const ok = await onSendFiles(files, caption || undefined, replyToMessageId);
     if (ok) {
       setPendingFiles([]);
       setInputText('');
+      if (replyingTo?.id === replyToMessageId) setReplyingTo(null);
     } else {
       setSyncSnack({ show: true, text: 'Gửi file thất bại — thử lại sau', color: 'error' });
     }
@@ -1179,6 +1266,90 @@ function MessageThread({
     }
   }
 
+  function clearReactionHoverTimer() {
+    if (!reactionHoverTimerRef.current) return;
+    window.clearTimeout(reactionHoverTimerRef.current);
+    reactionHoverTimerRef.current = null;
+  }
+
+  function openReactionOnHover(messageId: string) {
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    clearReactionHoverTimer();
+    setActiveReactionMessageId(messageId);
+    setActiveActionMessageId(null);
+  }
+
+  function scheduleReactionClose(messageId: string) {
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    clearReactionHoverTimer();
+    reactionHoverTimerRef.current = window.setTimeout(() => {
+      setActiveReactionMessageId((current) => current === messageId ? null : current);
+      reactionHoverTimerRef.current = null;
+    }, 220);
+  }
+
+  function beginReply(message: Message) {
+    if (message.isDeleted) return;
+    setReplyingTo(message);
+    setActiveActionMessageId(null);
+    setActiveReactionMessageId(null);
+    setMobileActionMessageId(null);
+    window.setTimeout(() => document.getElementById('chat-message-input')?.focus(), 0);
+  }
+
+  function beginForward(message: Message) {
+    if (message.isDeleted) return;
+    setForwardingMessageId(message.id);
+    setSelectedForwardIds(new Set());
+    setForwardSearch('');
+    setActiveActionMessageId(null);
+    setActiveReactionMessageId(null);
+    setMobileActionMessageId(null);
+  }
+
+  function toggleForwardTarget(conversationId: string) {
+    setSelectedForwardIds((current) => {
+      const next = new Set(current);
+      if (next.has(conversationId)) next.delete(conversationId);
+      else if (next.size < 20) next.add(conversationId);
+      return next;
+    });
+  }
+
+  async function runForwardMessage() {
+    if (!forwardingMessageId || !onForwardMessage || selectedForwardIds.size === 0) return;
+    const result = await onForwardMessage(forwardingMessageId, [...selectedForwardIds]);
+    if (result.ok) {
+      const failedText = result.failed ? `, ${result.failed} nơi thất bại` : '';
+      setSyncSnack({
+        show: true,
+        text: `Đã chuyển tiếp đến ${result.forwarded || selectedForwardIds.size} cuộc trò chuyện${failedText}.`,
+        color: result.failed ? 'warning' : 'success',
+      });
+      setForwardingMessageId(null);
+      setSelectedForwardIds(new Set());
+      return;
+    }
+    setSyncSnack({
+      show: true,
+      text: result.error || 'Chuyển tiếp tin nhắn thất bại.',
+      color: 'error',
+    });
+  }
+
+  function jumpToRepliedMessage(messageId: string | null) {
+    if (!messageId) return;
+    const element = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
+    if (!element) {
+      setSyncSnack({ show: true, text: 'Tin nhắn gốc chưa có trong danh sách đang tải.', color: 'warning' });
+      return;
+    }
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(messageId);
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 1600);
+  }
+
   async function runConfirmedMessageAction() {
     if (!confirmMessageAction) return;
     const { messageId, action } = confirmMessageAction;
@@ -1285,6 +1456,13 @@ function MessageThread({
 
   const mobileActionMessage = messages.find((message) => message.id === mobileActionMessageId) ?? null;
   const mobileOwnReactionIcon = mobileActionMessage?.reactions?.find((reaction) => reaction.isSelf)?.icon;
+  const normalizedForwardSearch = forwardSearch.trim().toLocaleLowerCase('vi-VN');
+  const forwardTargets = conversations.filter((candidate) => {
+    if (!candidate.zaloAccount?.id || candidate.zaloAccount.id !== conversation.zaloAccount?.id) return false;
+    if (!normalizedForwardSearch) return true;
+    const name = candidate.contact?.fullName || 'Không rõ tên';
+    return name.toLocaleLowerCase('vi-VN').includes(normalizedForwardSearch);
+  });
 
   return (
     <div className="chat-canvas relative flex h-full flex-1 flex-col">
@@ -1470,11 +1648,17 @@ function MessageThread({
                       aria-label="Thả biểu cảm"
                       title="Thả biểu cảm"
                       disabled={Boolean(pendingAction)}
+                      onMouseEnter={() => openReactionOnHover(msg.id)}
+                      onMouseLeave={() => scheduleReactionClose(msg.id)}
                     >
                       {pendingAction === 'reaction' ? <Spinner size="sm" /> : <Smiley size={19} />}
                     </button>
                   </PopoverTrigger>
-                  <PopoverContent className="rounded-full p-1.5 shadow-lg">
+                  <PopoverContent
+                    className="chat-reaction-popover rounded-full p-1.5 shadow-lg"
+                    onMouseEnter={clearReactionHoverTimer}
+                    onMouseLeave={() => scheduleReactionClose(msg.id)}
+                  >
                     <div className="w-[286px] max-w-[calc(100vw-24px)]">
                       <MessageReactionPicker
                         selectedIcon={ownReactionIcon}
@@ -1510,6 +1694,8 @@ function MessageThread({
                   <MessageActionMenu
                     isSelf={isSelf}
                     isDeleted={msg.isDeleted}
+                    onReply={() => beginReply(msg)}
+                    onForward={() => beginForward(msg)}
                     onDelete={openDeleteConfirmation}
                     onRecall={openRecallConfirmation}
                   />
@@ -1527,7 +1713,10 @@ function MessageThread({
               </div>
             )}
           <div
-            className={`chat-message-row group mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
+            data-message-id={msg.id}
+            className={`chat-message-row group mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'} ${
+              highlightedMessageId === msg.id ? 'chat-message-row--highlighted' : ''
+            }`}
           >
             {!isSelf && (
               <button
@@ -1576,6 +1765,24 @@ function MessageThread({
                   event.stopPropagation();
                 }}
               >
+                {!msg.isDeleted && msg.replyTo && (
+                  <button
+                    type="button"
+                    className={`chat-reply-quote mb-2 block w-full rounded-lg border-l-[3px] px-2.5 py-1.5 text-left transition-colors ${
+                      isSelf
+                        ? 'border-white/75 bg-white/15 hover:bg-white/25'
+                        : 'border-primary bg-primary/10 hover:bg-primary/15'
+                    }`}
+                    onClick={() => jumpToRepliedMessage(msg.replyTo?.messageId || null)}
+                  >
+                    <span className={`block truncate text-xs font-semibold ${isSelf ? 'text-white' : 'text-primary'}`}>
+                      {msg.replyTo.senderName || 'Tin nhắn'}
+                    </span>
+                    <span className={`block truncate text-xs ${isSelf ? 'text-white/75' : 'text-foreground-500'}`}>
+                      {replyPreviewText(msg.replyTo)}
+                    </span>
+                  </button>
+                )}
                 {/* Deleted */}
                 {msg.isDeleted ? (
                   <div className="italic opacity-70">Tin nhắn đã được thu hồi</div>
@@ -1672,7 +1879,7 @@ function MessageThread({
                     <button
                       key={reaction.icon}
                       type="button"
-                      className={`flex min-h-7 items-center gap-1 rounded-full border bg-content1 px-2 text-xs shadow-sm transition-colors hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                      className={`chat-reaction-chip flex min-h-7 items-center gap-1 rounded-full border bg-content1 px-2 text-xs shadow-sm hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
                         reaction.isSelf ? 'border-primary text-primary' : 'border-default text-foreground-600'
                       }`}
                       title={reaction.names.length > 0 ? reaction.names.join(', ') : `${reaction.count} biểu cảm`}
@@ -1742,6 +1949,38 @@ function MessageThread({
           }`}
         >
           {syncSnack.text}
+        </div>
+      )}
+
+      {replyingTo && (
+        <div className="chat-reply-composer flex items-center gap-3 border-t border-default bg-content1 px-3 py-2">
+          <div className="h-10 w-1 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+              <ArrowBendUpLeft size={16} weight="bold" />
+              Trả lời {replyingTo.senderType === 'self' ? 'chính bạn' : replyingTo.senderName || 'tin nhắn'}
+            </div>
+            <div className="truncate text-xs text-foreground-500">
+              {replyPreviewText({
+                messageId: replyingTo.id,
+                zaloMsgId: replyingTo.zaloMsgId,
+                zaloCliMsgId: replyingTo.zaloCliMsgId,
+                senderUid: replyingTo.senderUid,
+                senderName: replyingTo.senderName,
+                content: replyingTo.content,
+                contentType: replyingTo.contentType,
+              })}
+            </div>
+          </div>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            aria-label="Hủy trả lời"
+            onPress={() => setReplyingTo(null)}
+          >
+            <X size={18} />
+          </Button>
         </div>
       )}
 
@@ -2012,6 +2251,8 @@ function MessageThread({
                 <MessageActionMenu
                   isSelf={mobileActionMessage.senderType === 'self'}
                   isDeleted={mobileActionMessage.isDeleted}
+                  onReply={() => beginReply(mobileActionMessage)}
+                  onForward={() => beginForward(mobileActionMessage)}
                   onDelete={() => {
                     const messageId = mobileActionMessage.id;
                     setMobileActionMessageId(null);
@@ -2026,6 +2267,95 @@ function MessageThread({
               </div>
             )}
           </ModalBody>
+        </ModalContent>
+      </Modal>
+
+      {/* Forward picker — Zalo only permits targets on the source account. */}
+      <Modal
+        isOpen={Boolean(forwardingMessageId)}
+        onOpenChange={(open) => {
+          if (!open && (!forwardingMessageId || messageActionPending[forwardingMessageId] !== 'forward')) {
+            setForwardingMessageId(null);
+            setSelectedForwardIds(new Set());
+          }
+        }}
+        size="md"
+        placement="center"
+        scrollBehavior="inside"
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalBody className="gap-3 px-4 pt-5">
+                <div>
+                  <div className="text-lg font-semibold">Chuyển tiếp tin nhắn</div>
+                  <div className="text-xs text-foreground-500">Có thể chọn tối đa 20 cuộc trò chuyện.</div>
+                </div>
+                <Input
+                  autoFocus
+                  value={forwardSearch}
+                  onValueChange={setForwardSearch}
+                  placeholder="Tìm người hoặc nhóm"
+                  startContent={<MagnifyingGlass size={18} className="text-foreground-400" />}
+                  isClearable
+                  onClear={() => setForwardSearch('')}
+                />
+                <div className="-mx-1 max-h-[52vh] overflow-y-auto px-1">
+                  {forwardTargets.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-foreground-500">
+                      Không tìm thấy cuộc trò chuyện phù hợp
+                    </div>
+                  ) : forwardTargets.map((target) => {
+                    const selected = selectedForwardIds.has(target.id);
+                    return (
+                      <button
+                        key={target.id}
+                        type="button"
+                        className={`mb-1 flex min-h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left transition-colors ${
+                          selected ? 'bg-primary/10' : 'hover:bg-default-100'
+                        }`}
+                        aria-pressed={selected}
+                        onClick={() => toggleForwardTarget(target.id)}
+                      >
+                        <Avatar
+                          size="sm"
+                          src={target.contact?.avatarUrl || undefined}
+                          name={target.contact?.fullName || undefined}
+                          icon={target.threadType === 'group' ? <UsersThree size={18} /> : <User size={18} />}
+                          showFallback
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">
+                            {target.contact?.fullName || 'Không rõ tên'}
+                          </div>
+                          <div className="text-xs text-foreground-500">
+                            {target.threadType === 'group' ? 'Nhóm' : 'Cá nhân'}
+                          </div>
+                        </div>
+                        <CheckCircle
+                          size={24}
+                          weight={selected ? 'fill' : 'regular'}
+                          className={selected ? 'text-primary' : 'text-foreground-300'}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>Hủy</Button>
+                <Button
+                  color="primary"
+                  startContent={<ShareFat size={18} />}
+                  isDisabled={selectedForwardIds.size === 0}
+                  isLoading={Boolean(forwardingMessageId && messageActionPending[forwardingMessageId] === 'forward')}
+                  onPress={() => void runForwardMessage()}
+                >
+                  Chuyển tiếp{selectedForwardIds.size > 0 ? ` (${selectedForwardIds.size})` : ''}
+                </Button>
+              </ModalFooter>
+            </>
+          )}
         </ModalContent>
       </Modal>
 

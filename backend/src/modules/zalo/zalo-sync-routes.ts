@@ -12,6 +12,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { detectContentType } from './zalo-message-helpers.js';
 import { getGroupChatHistoryV2 } from './zalo-group-history.js';
+import { storedReplyFromZaloQuote } from '../chat/zalo-message-quote.js';
 
 export async function zaloSyncRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
@@ -176,6 +177,9 @@ export async function zaloSyncRoutes(app: FastifyInstance) {
           content,
           contentType: detectContentType(data.msgType, rawContent),
           attachments: [],
+          ...(storedReplyFromZaloQuote(data.quote)
+            ? { replyTo: storedReplyFromZaloQuote(data.quote) as any }
+            : {}),
           sentAt: new Date(sentAtMs),
         });
       }

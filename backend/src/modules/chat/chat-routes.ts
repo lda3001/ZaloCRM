@@ -11,6 +11,7 @@ import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
+import { buildZaloQuote, storedReplyFromMessage } from './zalo-message-quote.js';
 
 type QueryParams = Record<string, string>;
 
@@ -39,6 +40,31 @@ function storedMessageReactions(value: unknown): StoredMessageReaction[] {
     const reaction = item as Partial<StoredMessageReaction>;
     return typeof reaction.userId === 'string' && typeof reaction.icon === 'string';
   });
+}
+
+function forwardableMessageContent(message: { content: string | null; contentType: string }): string {
+  const content = message.content?.trim() || '';
+  if (message.contentType === 'text') return content;
+  let payload: any = null;
+  try {
+    payload = content.startsWith('{') ? JSON.parse(content) : null;
+  } catch {
+    payload = null;
+  }
+  const label: Record<string, string> = {
+    image: 'Hình ảnh',
+    video: 'Video',
+    voice: 'Tin nhắn thoại',
+    gif: 'GIF',
+    file: 'Tệp đính kèm',
+    sticker: 'Sticker',
+    link: 'Liên kết',
+  };
+  const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+  const url = payload?.href || payload?.hdUrl || payload?.thumb || '';
+  return [title || `[${label[message.contentType] || 'Tin nhắn'}]`, url]
+    .filter(Boolean)
+    .join('\n');
 }
 
 interface ZaloMuteEntry {
@@ -735,20 +761,102 @@ export async function chatRoutes(app: FastifyInstance) {
     }
   });
 
+  // Forward one stored message to one or more conversations of the same Zalo account.
+  app.post('/api/v1/conversations/:id/messages/:messageId/forward', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id, messageId } = request.params as { id: string; messageId: string };
+    const { targetConversationIds } = (request.body ?? {}) as { targetConversationIds?: unknown };
+    if (!Array.isArray(targetConversationIds)) {
+      return reply.status(400).send({ error: 'Danh sách cuộc trò chuyện không hợp lệ' });
+    }
+    const targetIds = Array.from(new Set(
+      targetConversationIds.filter((value): value is string => typeof value === 'string' && value.length > 0),
+    ));
+    if (targetIds.length === 0 || targetIds.length > 20) {
+      return reply.status(400).send({ error: 'Chọn từ 1 đến 20 cuộc trò chuyện' });
+    }
+
+    const sourceConversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { zaloAccountId: true },
+    });
+    if (!sourceConversation) return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    const sourceMessage = await prisma.message.findFirst({
+      where: { id: messageId, conversationId: id, isDeleted: false },
+      select: { content: true, contentType: true },
+    });
+    if (!sourceMessage) return reply.status(404).send({ error: 'Không tìm thấy tin nhắn' });
+
+    const targets = await prisma.conversation.findMany({
+      where: {
+        id: { in: targetIds },
+        orgId: user.orgId,
+        zaloAccountId: sourceConversation.zaloAccountId,
+        externalThreadId: { not: null },
+      },
+      select: { id: true, externalThreadId: true, threadType: true },
+    });
+    if (targets.length !== targetIds.length) {
+      return reply.status(400).send({
+        error: 'Chỉ có thể chuyển tiếp giữa các cuộc trò chuyện của cùng tài khoản Zalo',
+      });
+    }
+
+    const content = forwardableMessageContent(sourceMessage);
+    if (!content) return reply.status(409).send({ error: 'Tin nhắn này không có nội dung để chuyển tiếp' });
+    const instance = zaloPool.getInstance(sourceConversation.zaloAccountId);
+    if (!instance?.api) return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+
+    for (const _target of targets) {
+      const limits = zaloRateLimiter.checkLimits(sourceConversation.zaloAccountId);
+      if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
+    }
+
+    try {
+      let forwarded = 0;
+      let failed = 0;
+      for (const threadType of ['user', 'group'] as const) {
+        const threadIds = targets
+          .filter((target) => target.threadType === threadType)
+          .map((target) => target.externalThreadId as string);
+        if (threadIds.length === 0) continue;
+        threadIds.forEach(() => zaloRateLimiter.recordSend(sourceConversation.zaloAccountId));
+        const result = await instance.api.forwardMessage(
+          { message: content },
+          threadIds,
+          threadType === 'group' ? 1 : 0,
+        );
+        forwarded += Array.isArray(result?.success) ? result.success.length : 0;
+        failed += Array.isArray(result?.fail) ? result.fail.length : 0;
+      }
+      if (forwarded === 0) {
+        return reply.status(502).send({ error: 'Zalo không chuyển tiếp được tin nhắn' });
+      }
+      return { forwarded, failed };
+    } catch (err) {
+      logger.error(`[chat] Forward message ${messageId} error:`, err);
+      return reply.status(502).send({ error: 'Chuyển tiếp tin nhắn thất bại' });
+    }
+  });
+
   // ── Send message ─────────────────────────────────────────────────────────
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { content, contentType, sticker } = request.body as {
+    const { content, contentType, sticker, replyToMessageId } = request.body as {
       content: string;
       contentType?: string;
       sticker?: { id: number; catId: number; type: number };
+      replyToMessageId?: string;
     };
 
     if (contentType !== 'sticker') {
       if (!content?.trim()) return reply.status(400).send({ error: 'Content required' });
     } else if (!sticker?.id || sticker.catId === undefined || !sticker.type) {
       return reply.status(400).send({ error: 'Sticker payload incomplete (id/catId/type)' });
+    }
+    if (contentType === 'sticker' && replyToMessageId) {
+      return reply.status(400).send({ error: 'Zalo chưa hỗ trợ trả lời bằng sticker' });
     }
 
     const conversation = await prisma.conversation.findFirst({
@@ -759,6 +867,20 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    const replySource = replyToMessageId
+      ? await prisma.message.findFirst({
+          where: { id: replyToMessageId, conversationId: id, isDeleted: false },
+        })
+      : null;
+    if (replyToMessageId && !replySource) {
+      return reply.status(404).send({ error: 'Không tìm thấy tin nhắn để trả lời' });
+    }
+    const quote = replySource ? buildZaloQuote(replySource) : null;
+    if (replySource && !quote) {
+      return reply.status(409).send({ error: 'Tin nhắn cũ chưa có đủ dữ liệu Zalo để trả lời' });
+    }
+    const replyTo = replySource ? storedReplyFromMessage(replySource) : null;
 
     // Rate limit check — prevent account blocking
     const limits = zaloRateLimiter.checkLimits(conversation.zaloAccountId);
@@ -783,7 +905,11 @@ export async function chatRoutes(app: FastifyInstance) {
         );
         zaloMsgId = sendResult?.msgId ? String(sendResult.msgId) : null;
       } else {
-        const sendResult = await instance.api.sendMessage({ msg: content }, threadId, threadType);
+        const sendResult = await instance.api.sendMessage(
+          { msg: content, ...(quote ? { quote } : {}) },
+          threadId,
+          threadType,
+        );
         zaloMsgId = sendResult?.message?.msgId ? String(sendResult.message.msgId) : null;
       }
 
@@ -805,6 +931,7 @@ export async function chatRoutes(app: FastifyInstance) {
               senderName: 'Staff',
               content: contentType === 'sticker' ? JSON.stringify(sticker) : content,
               contentType: contentType === 'sticker' ? 'sticker' : 'text',
+              ...(replyTo ? { replyTo: replyTo as any } : {}),
               sentAt: new Date(),
               repliedByUserId: user.id,
             },

@@ -10,6 +10,7 @@ import {
   handleMessageReaction,
   handleMessageUndo,
 } from '../chat/message-handler.js';
+import { storedReplyFromZaloQuote } from '../chat/zalo-message-quote.js';
 import { detectContentType, updateContactAvatar } from './zalo-message-helpers.js';
 
 // Cached user info entry with 5-minute TTL
@@ -139,6 +140,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         threadType: isGroup ? 'group' : 'user',
         groupName,
         attachments: [],
+        replyTo: storedReplyFromZaloQuote(message.data?.quote),
       });
 
       if (result && !result.isDuplicate) {

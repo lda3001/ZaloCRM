@@ -170,6 +170,7 @@ model Message {
   contentType     String    @default("text") @map("content_type") // text, image, file, sticker, voice, video, link
   attachments     Json      @default("[]")
   reactions       Json      @default("[]")
+  replyTo         Json?     @map("reply_to")
   isDeleted       Boolean   @default(false) @map("is_deleted")
   deletedAt       DateTime? @map("deleted_at")
   sentAt          DateTime  @map("sent_at")

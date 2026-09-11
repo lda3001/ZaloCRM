@@ -48,6 +48,7 @@ export default function ChatView() {
     deleteMessage,
     recallMessage,
     reactToMessage,
+    forwardMessage,
     initSocket,
   } = useChat();
 
@@ -221,6 +222,7 @@ export default function ChatView() {
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           <MessageThread
             conversation={selectedConv}
+            conversations={conversations}
             messages={messages}
             loading={loadingMsgs}
             loadingOlder={loadingOlderMsgs}
@@ -234,6 +236,7 @@ export default function ChatView() {
             onDeleteMessage={deleteMessage}
             onRecallMessage={recallMessage}
             onReactMessage={reactToMessage}
+            onForwardMessage={forwardMessage}
             onLoadOlder={loadOlderMessages}
             onToggleContactPanel={() => setShowContactPanel((v) => !v)}
             onOpenContactPanel={() => setShowContactPanel(true)}

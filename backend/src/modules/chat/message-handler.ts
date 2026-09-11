@@ -6,6 +6,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { emitWebhook } from '../api/webhook-service.js';
+import type { StoredMessageReply } from './zalo-message-quote.js';
 
 export interface IncomingMessage {
   accountId: string;
@@ -23,6 +24,7 @@ export interface IncomingMessage {
   threadType: 'user' | 'group'; // user or group conversation
   groupName?: string;       // group name if group message
   attachments?: any[];
+  replyTo?: StoredMessageReply | null;
 }
 
 export interface HandleMessageResult {
@@ -38,6 +40,7 @@ export interface HandleMessageResult {
     contentType: string;
     attachments: any;
     reactions: any;
+    replyTo: any;
     isDeleted: boolean;
     deletedAt: Date | null;
     sentAt: Date;
@@ -64,6 +67,15 @@ export async function handleIncomingMessage(
 
     const conversation = await findOrCreateConversation(msg, account.orgId, contactId);
 
+    let replyTo = msg.replyTo ?? null;
+    if (replyTo?.zaloMsgId && !replyTo.messageId) {
+      const repliedMessage = await prisma.message.findFirst({
+        where: { conversationId: conversation.id, zaloMsgId: replyTo.zaloMsgId },
+        select: { id: true },
+      });
+      if (repliedMessage) replyTo = { ...replyTo, messageId: repliedMessage.id };
+    }
+
     if (msg.msgId) {
       const existing = await prisma.message.findFirst({
         where: { conversationId: conversation.id, zaloMsgId: msg.msgId },
@@ -71,10 +83,15 @@ export async function handleIncomingMessage(
       if (existing) {
         // The REST send route can create the row before selfListen delivers
         // Zalo's echo. Heal the missing client id so message actions work.
-        const stored = msg.cliMsgId && !existing.zaloCliMsgId
+        const shouldHealCliId = Boolean(msg.cliMsgId && !existing.zaloCliMsgId);
+        const shouldHealReply = Boolean(replyTo && !existing.replyTo);
+        const stored = shouldHealCliId || shouldHealReply
           ? await prisma.message.update({
               where: { id: existing.id },
-              data: { zaloCliMsgId: msg.cliMsgId },
+              data: {
+                ...(shouldHealCliId ? { zaloCliMsgId: msg.cliMsgId } : {}),
+                ...(shouldHealReply ? { replyTo: replyTo as any } : {}),
+              },
             })
           : existing;
         return {
@@ -100,6 +117,7 @@ export async function handleIncomingMessage(
         content: msg.content || '',
         contentType: msg.contentType || 'text',
         attachments: msg.attachments ?? [],
+        ...(replyTo ? { replyTo: replyTo as any } : {}),
         sentAt,
       },
     });

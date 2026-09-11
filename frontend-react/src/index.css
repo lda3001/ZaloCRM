@@ -228,6 +228,46 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 .chat-message-bubble { overflow-wrap: anywhere; }
 .chat-message-bubble audio { width: 100%; min-width: 0; }
 
+@keyframes chat-reaction-popover-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes chat-reaction-option-in {
+  from { opacity: 0; transform: translateY(7px) scale(0.72); }
+  65% { transform: translateY(-2px) scale(1.08); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes chat-message-highlight {
+  0%, 100% { filter: none; }
+  20%, 72% { filter: drop-shadow(0 0 8px rgba(8, 104, 232, 0.65)); }
+}
+
+.chat-reaction-popover {
+  transform-origin: bottom center;
+  animation: chat-reaction-popover-in 180ms cubic-bezier(.2, .85, .3, 1.15) both;
+}
+
+.chat-reaction-option {
+  opacity: 1;
+  animation: chat-reaction-option-in 260ms cubic-bezier(.2, .85, .3, 1.25) backwards;
+  transition: background-color 140ms ease, transform 140ms ease, filter 140ms ease;
+}
+
+.chat-reaction-option:hover {
+  transform: translateY(-3px) scale(1.2);
+  filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.14));
+}
+
+.chat-reaction-chip {
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.chat-reaction-chip:hover { transform: translateY(-1px) scale(1.04); }
+.chat-message-row--highlighted { animation: chat-message-highlight 1.5s ease-in-out; }
+.chat-reply-quote { backdrop-filter: blur(2px); }
+
 /* Zalo-style message controls: hover/focus on mouse, long-press sheet on touch. */
 .chat-message-actions {
   display: flex;

@@ -10,6 +10,7 @@ import {
 export interface SendMessageOptions {
   contentType?: 'text' | 'sticker';
   sticker?: { id: number; catId: number; type: number };
+  replyToMessageId?: string;
 }
 
 export interface SendMessageResult {
@@ -17,13 +18,23 @@ export interface SendMessageResult {
   error?: string;
 }
 
-export type MessageActionKind = 'delete' | 'recall' | 'reaction';
+export type MessageActionKind = 'delete' | 'recall' | 'reaction' | 'forward';
 
 export interface MessageReaction {
   userId: string;
   userName: string | null;
   icon: string;
   isSelf: boolean;
+}
+
+export interface MessageReply {
+  messageId: string | null;
+  zaloMsgId: string | null;
+  zaloCliMsgId: string | null;
+  senderUid: string | null;
+  senderName: string | null;
+  content: string | null;
+  contentType: string;
 }
 import { api } from '../api/client';
 import type { Contact } from './use-contacts';
@@ -70,6 +81,7 @@ export interface Message {
   zaloMsgId: string | null;
   zaloCliMsgId: string | null;
   reactions: MessageReaction[];
+  replyTo: MessageReply | null;
 }
 
 
@@ -307,6 +319,7 @@ export function useChat() {
         content: opts?.contentType === 'sticker' ? '' : content,
         contentType: opts?.contentType ?? 'text',
         sticker: opts?.contentType === 'sticker' ? opts.sticker : undefined,
+        replyToMessageId: opts?.replyToMessageId,
       });
       if (selectedConvIdRef.current === conversationId) {
         setMessages((prev) =>
@@ -325,7 +338,11 @@ export function useChat() {
     }
   }, []);
 
-  const sendAttachments = useCallback(async (files: File[], caption?: string): Promise<boolean> => {
+  const sendAttachments = useCallback(async (
+    files: File[],
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> => {
     const conversationId = selectedConvIdRef.current;
     if (!conversationId || files.length === 0) return false;
     setSendingMsg(true);
@@ -333,6 +350,7 @@ export function useChat() {
       const form = new FormData();
       for (const file of files) form.append('files', file, file.name);
       if (caption?.trim()) form.append('caption', caption.trim());
+      if (replyToMessageId) form.append('replyToMessageId', replyToMessageId);
       const res = await api.post(
         `/conversations/${conversationId}/attachments`,
         form,
@@ -352,6 +370,41 @@ export function useChat() {
       return false;
     } finally {
       setSendingMsg(false);
+    }
+  }, [fetchConversations]);
+
+  const forwardMessage = useCallback(async (
+    messageId: string,
+    targetConversationIds: string[],
+  ): Promise<SendMessageResult & { forwarded?: number; failed?: number }> => {
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId) return { ok: false, error: 'Chưa chọn cuộc trò chuyện.' };
+    if (targetConversationIds.length === 0) {
+      return { ok: false, error: 'Hãy chọn ít nhất một cuộc trò chuyện.' };
+    }
+    setMessageActionPending((current) => ({ ...current, [messageId]: 'forward' }));
+    try {
+      const response = await api.post(
+        `/conversations/${conversationId}/messages/${messageId}/forward`,
+        { targetConversationIds },
+      );
+      void fetchConversations();
+      return {
+        ok: true,
+        forwarded: Number(response.data?.forwarded || 0),
+        failed: Number(response.data?.failed || 0),
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.response?.data?.error || 'Chuyển tiếp tin nhắn thất bại.',
+      };
+    } finally {
+      setMessageActionPending((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
     }
   }, [fetchConversations]);
 
@@ -545,6 +598,7 @@ export function useChat() {
     deleteMessage,
     recallMessage,
     reactToMessage,
+    forwardMessage,
     initSocket,
     destroySocket,
   };

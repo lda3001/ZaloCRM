@@ -25,6 +25,15 @@ export interface ChatSocketMessage {
     icon: string;
     isSelf: boolean;
   }>;
+  replyTo: {
+    messageId: string | null;
+    zaloMsgId: string | null;
+    zaloCliMsgId: string | null;
+    senderUid: string | null;
+    senderName: string | null;
+    content: string | null;
+    contentType: string;
+  } | null;
 }
 
 export interface ChatMessagePayload {

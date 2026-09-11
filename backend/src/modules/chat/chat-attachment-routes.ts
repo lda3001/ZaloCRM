@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { imageSize } from 'image-size';
 import type { Server } from 'socket.io';
 import { Readable } from 'node:stream';
+import { buildZaloQuote, storedReplyFromMessage } from './zalo-message-quote.js';
 
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp']);
 const MIME_EXT_FALLBACK: Record<string, string> = {
@@ -171,6 +172,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
     const files: UploadedFile[] = [];
     let caption = '';
+    let replyToMessageId = '';
     try {
       for await (const part of request.parts()) {
         if (part.type === 'file') {
@@ -180,6 +182,8 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
           files.push({ buf, filename, ext, kind: detectKind(ext, part.mimetype) });
         } else if (part.fieldname === 'caption') {
           caption = String((part as any).value || '').trim();
+        } else if (part.fieldname === 'replyToMessageId') {
+          replyToMessageId = String((part as any).value || '').trim();
         }
       }
     } catch (err: any) {
@@ -199,6 +203,20 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    const replySource = replyToMessageId
+      ? await prisma.message.findFirst({
+          where: { id: replyToMessageId, conversationId: id, isDeleted: false },
+        })
+      : null;
+    if (replyToMessageId && !replySource) {
+      return reply.status(404).send({ error: 'Không tìm thấy tin nhắn để trả lời' });
+    }
+    const quote = replySource ? buildZaloQuote(replySource) : null;
+    if (replySource && !quote) {
+      return reply.status(409).send({ error: 'Tin nhắn cũ chưa có đủ dữ liệu Zalo để trả lời' });
+    }
+    const replyTo = replySource ? storedReplyFromMessage(replySource) : null;
 
     const limits = zaloRateLimiter.checkLimits(conversation.zaloAccountId);
     if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
@@ -228,7 +246,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
       const sendResult = await instance.api.sendMessage(
-        { msg: caption, attachments: sources },
+        { msg: caption, attachments: sources, ...(quote ? { quote } : {}) },
         threadId,
         threadType,
       );
@@ -254,7 +272,10 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         if (echo) {
           resultMessages.push(await prisma.message.update({
             where: { id: echo.id },
-            data: { repliedByUserId: user.id },
+            data: {
+              repliedByUserId: user.id,
+              ...(replyTo && !echo.replyTo ? { replyTo: replyTo as any } : {}),
+            },
           }));
         } else {
           resultMessages.push(await prisma.message.create({
@@ -267,6 +288,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               senderName: 'Staff',
               content: caption,
               contentType: 'text',
+              ...(replyTo ? { replyTo: replyTo as any } : {}),
               sentAt: now,
               repliedByUserId: user.id,
             },
@@ -280,7 +302,10 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         if (echo) {
           resultMessages.push(await prisma.message.update({
             where: { id: echo.id },
-            data: { repliedByUserId: user.id },
+            data: {
+              repliedByUserId: user.id,
+              ...(replyTo && !echo.replyTo ? { replyTo: replyTo as any } : {}),
+            },
           }));
           continue;
         }
@@ -295,6 +320,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             senderName: 'Staff',
             content: placeholderContent(file),
             contentType: file.kind,
+            ...(replyTo ? { replyTo: replyTo as any } : {}),
             sentAt: now,
             repliedByUserId: user.id,
           },
