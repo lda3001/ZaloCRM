@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Avatar, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, Spinner, Textarea } from '@heroui/react';
+import { Alert, Avatar, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, Popover, PopoverContent, PopoverTrigger, Spinner, Textarea } from '@heroui/react';
 import {
   ArrowLeft,
   ArrowsClockwise,
@@ -8,6 +8,7 @@ import {
   ChatText,
   Clock,
   DownloadSimple,
+  DotsThree,
   FileText,
   Bell,
   BellSlash,
@@ -18,6 +19,8 @@ import {
   PhoneCall,
   Smiley,
   Sticker,
+  Trash,
+  ArrowCounterClockwise,
   VideoCamera,
   User,
   UsersThree,
@@ -28,7 +31,13 @@ import {
   isConversationMuted,
   updateConversationMuteSnapshot,
 } from '../../utils/desktop-notify';
-import type { Conversation, Message, SendMessageResult } from '../../hooks/use-chat';
+import type {
+  Conversation,
+  Message,
+  MessageActionKind,
+  MessageReaction,
+  SendMessageResult,
+} from '../../hooks/use-chat';
 import { getGroupInfoCached } from '../../services/group-info-cache';
 
 interface Props {
@@ -39,18 +48,54 @@ interface Props {
   hasOlderMessages?: boolean;
   messageError?: string;
   sending: boolean;
+  messageActionPending?: Record<string, MessageActionKind>;
   showContactPanel?: boolean;
   onSend: (
     content: string,
     opts?: import('../../hooks/use-chat').SendMessageOptions,
   ) => Promise<SendMessageResult>;
   onSendFiles?: (files: File[], caption?: string) => Promise<boolean>;
+  onDeleteMessage?: (messageId: string) => Promise<SendMessageResult>;
+  onRecallMessage?: (messageId: string) => Promise<SendMessageResult>;
+  onReactMessage?: (messageId: string, icon: string) => Promise<SendMessageResult>;
   onLoadOlder?: () => Promise<boolean>;
   onToggleContactPanel: () => void;
   onOpenContactPanel?: () => void;
   onOpenConversation?: (conversationId: string) => void;
   onBack?: () => void;
   onRefreshMessages?: () => void;
+}
+
+const MESSAGE_REACTION_OPTIONS = [
+  { icon: '/-strong', emoji: '👍', label: 'Thích' },
+  { icon: '/-heart', emoji: '❤️', label: 'Yêu thích' },
+  { icon: ':>', emoji: '😂', label: 'Haha' },
+  { icon: ':o', emoji: '😮', label: 'Wow' },
+  { icon: ':-((', emoji: '😢', label: 'Buồn' },
+  { icon: ':-h', emoji: '😡', label: 'Phẫn nộ' },
+] as const;
+
+const REACTION_EMOJI = new Map<string, string>(
+  MESSAGE_REACTION_OPTIONS.map((reaction) => [reaction.icon, reaction.emoji]),
+);
+
+function summarizeReactions(reactions: MessageReaction[] | null | undefined) {
+  const summaries = new Map<string, { icon: string; emoji: string; count: number; isSelf: boolean; names: string[] }>();
+  for (const reaction of Array.isArray(reactions) ? reactions : []) {
+    if (!reaction.icon) continue;
+    const current = summaries.get(reaction.icon) ?? {
+      icon: reaction.icon,
+      emoji: REACTION_EMOJI.get(reaction.icon) || '✨',
+      count: 0,
+      isSelf: false,
+      names: [],
+    };
+    current.count += 1;
+    current.isSelf ||= Boolean(reaction.isSelf);
+    if (reaction.userName) current.names.push(reaction.userName);
+    summaries.set(reaction.icon, current);
+  }
+  return Array.from(summaries.values());
 }
 
 function formatMessageTime(d: string): string {
@@ -530,9 +575,13 @@ function MessageThread({
   hasOlderMessages = false,
   messageError = '',
   sending,
+  messageActionPending = {},
   showContactPanel = false,
   onSend,
   onSendFiles,
+  onDeleteMessage,
+  onRecallMessage,
+  onReactMessage,
   onLoadOlder,
   onToggleContactPanel,
   onOpenContactPanel,
@@ -554,6 +603,11 @@ function MessageThread({
   const [openingPrivateChat, setOpeningPrivateChat] = useState(false);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [syncSnack, setSyncSnack] = useState({ show: false, text: '', color: 'success' });
+  const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
+  const [confirmMessageAction, setConfirmMessageAction] = useState<{
+    messageId: string;
+    action: 'delete' | 'recall';
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const nearBottomRef = useRef(true);
@@ -564,6 +618,8 @@ function MessageThread({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     setPendingFiles([]);
+    setActiveActionMessageId(null);
+    setConfirmMessageAction(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation?.id]);
 
@@ -1031,6 +1087,38 @@ function MessageThread({
     }
   }
 
+  async function reactToMessage(messageId: string, icon: string) {
+    if (!onReactMessage || messageActionPending[messageId]) return;
+    setActiveActionMessageId(null);
+    const result = await onReactMessage(messageId, icon);
+    if (!result.ok) {
+      setSyncSnack({
+        show: true,
+        text: result.error || 'Cập nhật biểu cảm thất bại.',
+        color: 'error',
+      });
+    }
+  }
+
+  async function runConfirmedMessageAction() {
+    if (!confirmMessageAction) return;
+    const { messageId, action } = confirmMessageAction;
+    if (messageActionPending[messageId]) return;
+    const handler = action === 'delete' ? onDeleteMessage : onRecallMessage;
+    if (!handler) return;
+    const result = await handler(messageId);
+    setConfirmMessageAction(null);
+    setSyncSnack({
+      show: true,
+      text: result.ok
+        ? action === 'delete'
+          ? 'Đã xóa tin nhắn ở phía bạn.'
+          : 'Đã thu hồi tin nhắn với mọi người.'
+        : result.error || (action === 'delete' ? 'Xóa tin nhắn thất bại.' : 'Thu hồi tin nhắn thất bại.'),
+      color: result.ok ? 'success' : 'error',
+    });
+  }
+
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -1222,6 +1310,80 @@ function MessageThread({
         {messages.map((msg, idx) => {
           const profile = profileForMessage(msg);
           const isSelf = msg.senderType === 'self';
+          const reactionSummaries = summarizeReactions(msg.reactions);
+          const ownReactionIcon = msg.reactions?.find((reaction) => reaction.isSelf)?.icon;
+          const pendingAction = messageActionPending[msg.id];
+          const messageActions = (
+            <div className="shrink-0 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
+              <Popover
+                placement={isSelf ? 'top-end' : 'top-start'}
+                isOpen={activeActionMessageId === msg.id}
+                onOpenChange={(open) => setActiveActionMessageId(open ? msg.id : null)}
+              >
+                <PopoverTrigger>
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 items-center justify-center rounded-full text-foreground-500 transition-colors hover:bg-default-100 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary md:h-8 md:w-8"
+                    aria-label="Thao tác với tin nhắn"
+                    title="Thao tác với tin nhắn"
+                    disabled={Boolean(pendingAction)}
+                  >
+                    {pendingAction ? <Spinner size="sm" /> : <DotsThree size={22} weight="bold" />}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="p-2">
+                  <div className="w-[268px] max-w-[calc(100vw-32px)]">
+                    {!msg.isDeleted && (
+                      <>
+                        <div className="px-1 pb-1 text-xs font-medium text-foreground-500">Thả biểu cảm</div>
+                        <div className="flex items-center justify-between gap-1 pb-2">
+                          {MESSAGE_REACTION_OPTIONS.map((reaction) => (
+                            <button
+                              key={reaction.icon}
+                              type="button"
+                              className={`flex h-10 w-10 items-center justify-center rounded-full text-xl transition-transform hover:scale-110 hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                                ownReactionIcon === reaction.icon ? 'bg-primary/15 ring-2 ring-primary/50' : ''
+                              }`}
+                              aria-label={reaction.label}
+                              title={reaction.label}
+                              onClick={() => void reactToMessage(msg.id, reaction.icon)}
+                            >
+                              {reaction.emoji}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="border-t border-default" />
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="mt-1 flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-danger transition-colors hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+                      onClick={() => {
+                        setActiveActionMessageId(null);
+                        setConfirmMessageAction({ messageId: msg.id, action: 'delete' });
+                      }}
+                    >
+                      <Trash size={18} />
+                      Xóa ở phía tôi
+                    </button>
+                    {isSelf && !msg.isDeleted && (
+                      <button
+                        type="button"
+                        className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-warning-600 transition-colors hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning"
+                        onClick={() => {
+                          setActiveActionMessageId(null);
+                          setConfirmMessageAction({ messageId: msg.id, action: 'recall' });
+                        }}
+                      >
+                        <ArrowCounterClockwise size={18} />
+                        Thu hồi với mọi người
+                      </button>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          );
           return (
           <Fragment key={msg.id}>
             {isNewDay(idx > 0 ? messages[idx - 1].sentAt : undefined, msg.sentAt) && (
@@ -1232,7 +1394,7 @@ function MessageThread({
               </div>
             )}
           <div
-            className={`mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
+            className={`group mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
           >
             {!isSelf && (
               <button
@@ -1251,6 +1413,7 @@ function MessageThread({
                 />
               </button>
             )}
+            {isSelf && messageActions}
             <div style={{ maxWidth: '70%' }} title={`${formatMessageTime(msg.sentAt)}, ${formatDayDivider(msg.sentAt)}`}>
               {conversation.threadType === 'group' && msg.senderType !== 'self' && (
                 <button
@@ -1271,10 +1434,7 @@ function MessageThread({
               >
                 {/* Deleted */}
                 {msg.isDeleted ? (
-                  <div className="italic line-through opacity-60">
-                    {msg.content || '(tin nhắn)'}
-                    <span className="text-xs"> (đã thu hồi)</span>
-                  </div>
+                  <div className="italic opacity-70">Tin nhắn đã được thu hồi</div>
                 ) : getVideoInfo(msg) ? (
                   <video
                     src={getVideoInfo(msg)!.href}
@@ -1362,7 +1522,28 @@ function MessageThread({
                   {formatMessageTime(msg.sentAt)}
                 </div>
               </div>
+              {!msg.isDeleted && reactionSummaries.length > 0 && (
+                <div className={`-mt-1 flex flex-wrap gap-1 px-1 ${isSelf ? 'justify-end' : 'justify-start'}`}>
+                  {reactionSummaries.map((reaction) => (
+                    <button
+                      key={reaction.icon}
+                      type="button"
+                      className={`flex min-h-7 items-center gap-1 rounded-full border bg-content1 px-2 text-xs shadow-sm transition-colors hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                        reaction.isSelf ? 'border-primary text-primary' : 'border-default text-foreground-600'
+                      }`}
+                      title={reaction.names.length > 0 ? reaction.names.join(', ') : `${reaction.count} biểu cảm`}
+                      aria-label={`${reaction.emoji}, ${reaction.count} biểu cảm${reaction.isSelf ? ', có bạn' : ''}`}
+                      disabled={!REACTION_EMOJI.has(reaction.icon) || Boolean(pendingAction)}
+                      onClick={() => void reactToMessage(msg.id, reaction.icon)}
+                    >
+                      <span>{reaction.emoji}</span>
+                      <span>{reaction.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+            {!isSelf && messageActions}
             {isSelf && (
               <button
                 type="button"
@@ -1406,6 +1587,8 @@ function MessageThread({
       {/* Sync snackbar */}
       {syncSnack.show && (
         <div
+          role="status"
+          aria-live="polite"
           className={`absolute bottom-20 left-1/2 z-20 -translate-x-1/2 rounded-lg px-4 py-2 text-sm text-white ${
             syncSnack.color === 'success'
               ? 'bg-success'
@@ -1657,6 +1840,51 @@ function MessageThread({
           </div>
         )}
       </div>
+
+      {/* Confirm destructive message actions */}
+      <Modal
+        isOpen={Boolean(confirmMessageAction)}
+        onOpenChange={(open) => {
+          if (!open && (!confirmMessageAction || !messageActionPending[confirmMessageAction.messageId])) {
+            setConfirmMessageAction(null);
+          }
+        }}
+        size="sm"
+        placement="center"
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalBody className="px-5 pb-2 pt-6">
+                <div className="text-lg font-semibold">
+                  {confirmMessageAction?.action === 'recall' ? 'Thu hồi tin nhắn?' : 'Xóa tin nhắn?'}
+                </div>
+                <div className="text-sm text-foreground-500">
+                  {confirmMessageAction?.action === 'recall'
+                    ? 'Tin nhắn sẽ bị thu hồi với mọi người trong cuộc trò chuyện Zalo.'
+                    : 'Tin nhắn chỉ bị xóa khỏi tài khoản Zalo đang kết nối và khỏi CRM của bạn.'}
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button
+                  variant="light"
+                  onPress={onClose}
+                  isDisabled={Boolean(confirmMessageAction && messageActionPending[confirmMessageAction.messageId])}
+                >
+                  Hủy
+                </Button>
+                <Button
+                  color={confirmMessageAction?.action === 'recall' ? 'warning' : 'danger'}
+                  isLoading={Boolean(confirmMessageAction && messageActionPending[confirmMessageAction.messageId])}
+                  onPress={() => void runConfirmedMessageAction()}
+                >
+                  {confirmMessageAction?.action === 'recall' ? 'Thu hồi' : 'Xóa phía tôi'}
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
 
       {/* Clickable sender / recipient profile */}
       <Modal

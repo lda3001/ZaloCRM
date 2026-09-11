@@ -33,6 +33,7 @@ export default function ChatView() {
     hasOlderMessages,
     messageError,
     sendingMsg,
+    messageActionPending,
     searchQuery,
     setSearchQuery,
     setAccountFilter,
@@ -44,6 +45,9 @@ export default function ChatView() {
     loadOlderMessages,
     sendMessage,
     sendAttachments,
+    deleteMessage,
+    recallMessage,
+    reactToMessage,
     initSocket,
   } = useChat();
 
@@ -223,9 +227,13 @@ export default function ChatView() {
             hasOlderMessages={hasOlderMessages}
             messageError={messageError}
             sending={sendingMsg}
+            messageActionPending={messageActionPending}
             showContactPanel={showContactPanel}
             onSend={sendMessage}
             onSendFiles={sendAttachments}
+            onDeleteMessage={deleteMessage}
+            onRecallMessage={recallMessage}
+            onReactMessage={reactToMessage}
             onLoadOlder={loadOlderMessages}
             onToggleContactPanel={() => setShowContactPanel((v) => !v)}
             onOpenContactPanel={() => setShowContactPanel(true)}

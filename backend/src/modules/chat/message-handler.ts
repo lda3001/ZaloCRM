@@ -16,6 +16,7 @@ export interface IncomingMessage {
   content: string;
   contentType: string;      // text, image, sticker, video, voice, gif, link, file
   msgId: string;
+  cliMsgId?: string;
   timestamp: number;        // epoch ms
   isSelf: boolean;
   threadId: string;         // For user: contact UID. For group: group ID
@@ -29,12 +30,14 @@ export interface HandleMessageResult {
     id: string;
     conversationId: string;
     zaloMsgId: string | null;
+    zaloCliMsgId: string | null;
     senderType: string;
     senderUid: string | null;
     senderName: string | null;
     content: string | null;
     contentType: string;
     attachments: any;
+    reactions: any;
     isDeleted: boolean;
     deletedAt: Date | null;
     sentAt: Date;
@@ -66,8 +69,16 @@ export async function handleIncomingMessage(
         where: { conversationId: conversation.id, zaloMsgId: msg.msgId },
       });
       if (existing) {
+        // The REST send route can create the row before selfListen delivers
+        // Zalo's echo. Heal the missing client id so message actions work.
+        const stored = msg.cliMsgId && !existing.zaloCliMsgId
+          ? await prisma.message.update({
+              where: { id: existing.id },
+              data: { zaloCliMsgId: msg.cliMsgId },
+            })
+          : existing;
         return {
-          message: existing,
+          message: stored,
           conversationId: conversation.id,
           orgId: account.orgId,
           contactId,
@@ -82,6 +93,7 @@ export async function handleIncomingMessage(
         id: randomUUID(),
         conversationId: conversation.id,
         zaloMsgId: msg.msgId || null,
+        zaloCliMsgId: msg.cliMsgId || null,
         senderType: msg.isSelf ? 'self' : 'contact',
         senderUid: msg.senderUid,
         senderName: msg.senderName || null,
@@ -236,14 +248,75 @@ async function updateConversationAfterMessage(
 }
 
 // Soft-delete a message by its Zalo message ID
-export async function handleMessageUndo(accountId: string, zaloMsgId: string): Promise<void> {
+export async function handleMessageUndo(accountId: string, zaloMsgId: string) {
   try {
+    const messages = await prisma.message.findMany({
+      where: {
+        zaloMsgId: String(zaloMsgId),
+        conversation: { zaloAccountId: accountId },
+      },
+      select: { id: true, conversationId: true },
+    });
+    if (messages.length === 0) return [];
     await prisma.message.updateMany({
-      where: { zaloMsgId: String(zaloMsgId) },
+      where: {
+        id: { in: messages.map((message) => message.id) },
+      },
       data: { isDeleted: true, deletedAt: new Date() },
     });
     logger.info(`[message-handler] Undo message ${zaloMsgId} for account ${accountId}`);
+    return messages;
   } catch (err) {
     logger.error('[message-handler] handleMessageUndo error:', err);
+    return [];
+  }
+}
+
+export interface StoredReaction {
+  userId: string;
+  userName: string | null;
+  icon: string;
+  isSelf: boolean;
+}
+
+function parseReactions(value: unknown): StoredReaction[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is StoredReaction => {
+    if (!item || typeof item !== 'object') return false;
+    const reaction = item as Partial<StoredReaction>;
+    return typeof reaction.userId === 'string' && typeof reaction.icon === 'string';
+  });
+}
+
+/** Persist one actor's latest reaction. Empty icon means remove it. */
+export async function handleMessageReaction(
+  accountId: string,
+  zaloMsgId: string,
+  reaction: StoredReaction,
+) {
+  try {
+    const message = await prisma.message.findFirst({
+      where: {
+        zaloMsgId: String(zaloMsgId),
+        conversation: { zaloAccountId: accountId },
+      },
+    });
+    if (!message) return null;
+
+    const actorId = reaction.userId.replace(/_0$/, '');
+    const current = parseReactions(message.reactions);
+    const withoutActor = current.filter((item) => (
+      item.userId.replace(/_0$/, '') !== actorId && !(reaction.isSelf && item.isSelf)
+    ));
+    const reactions = reaction.icon
+      ? [...withoutActor, { ...reaction, userId: actorId }]
+      : withoutActor;
+    return prisma.message.update({
+      where: { id: message.id },
+      data: { reactions: reactions as any },
+    });
+  } catch (err) {
+    logger.error('[message-handler] handleMessageReaction error:', err);
+    return null;
   }
 }

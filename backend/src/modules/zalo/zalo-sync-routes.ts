@@ -130,16 +130,29 @@ export async function zaloSyncRoutes(app: FastifyInstance) {
       const existingMessages = zaloMsgIds.length > 0
         ? await prisma.message.findMany({
             where: { conversationId: conversation.id, zaloMsgId: { in: zaloMsgIds } },
-            select: { zaloMsgId: true },
+            select: { id: true, zaloMsgId: true, zaloCliMsgId: true },
           })
         : [];
-      const existingIds = new Set(existingMessages.map((message) => message.zaloMsgId));
+      const existingByZaloId = new Map(
+        existingMessages.map((message) => [message.zaloMsgId, message]),
+      );
       const rows = [];
+      const cliIdRepairs: Promise<unknown>[] = [];
 
       for (const [zaloMsgId, gm] of messagesByZaloId) {
-        if (existingIds.has(zaloMsgId)) continue;
-
         const data = gm.data ?? {};
+        const zaloCliMsgId = String(data.cliMsgId || '') || null;
+        const existing = existingByZaloId.get(zaloMsgId);
+        if (existing) {
+          if (!existing.zaloCliMsgId && zaloCliMsgId) {
+            cliIdRepairs.push(prisma.message.update({
+              where: { id: existing.id },
+              data: { zaloCliMsgId },
+            }));
+          }
+          continue;
+        }
+
         const rawContent = data.content;
         const content =
           typeof rawContent === 'string'
@@ -156,6 +169,7 @@ export async function zaloSyncRoutes(app: FastifyInstance) {
           id: randomUUID(),
           conversationId: conversation.id,
           zaloMsgId,
+          zaloCliMsgId,
           senderType: gm.isSelf ? 'self' : 'contact',
           senderUid: String(data.uidFrom || ''),
           senderName: data.dName || null,
@@ -169,6 +183,7 @@ export async function zaloSyncRoutes(app: FastifyInstance) {
       const insertResult = rows.length > 0
         ? await prisma.message.createMany({ data: rows })
         : { count: 0 };
+      await Promise.all(cliIdRepairs);
       const created = insertResult.count;
       const skipped = msgs.length - created;
 

@@ -1,5 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
-import { onChatDeleted, onChatMessage, setActiveConversation } from '../services/chat-socket';
+import {
+  onChatDeleted,
+  onChatMessage,
+  onChatReaction,
+  onChatRemoved,
+  setActiveConversation,
+} from '../services/chat-socket';
 
 export interface SendMessageOptions {
   contentType?: 'text' | 'sticker';
@@ -9,6 +15,15 @@ export interface SendMessageOptions {
 export interface SendMessageResult {
   ok: boolean;
   error?: string;
+}
+
+export type MessageActionKind = 'delete' | 'recall' | 'reaction';
+
+export interface MessageReaction {
+  userId: string;
+  userName: string | null;
+  icon: string;
+  isSelf: boolean;
 }
 import { api } from '../api/client';
 import type { Contact } from './use-contacts';
@@ -53,6 +68,8 @@ export interface Message {
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
+  zaloCliMsgId: string | null;
+  reactions: MessageReaction[];
 }
 
 
@@ -76,6 +93,7 @@ export function useChat() {
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [messageError, setMessageError] = useState('');
   const [sendingMsg, setSendingMsg] = useState(false);
+  const [messageActionPending, setMessageActionPending] = useState<Record<string, MessageActionKind>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [threadFilter, setThreadFilter] = useState<ConversationTypeFilter>('all');
@@ -337,6 +355,92 @@ export function useChat() {
     }
   }, [fetchConversations]);
 
+  const deleteMessage = useCallback(async (messageId: string): Promise<SendMessageResult> => {
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId) return { ok: false, error: 'Chưa chọn cuộc trò chuyện.' };
+    setMessageActionPending((current) => ({ ...current, [messageId]: 'delete' }));
+    try {
+      await api.delete(`/conversations/${conversationId}/messages/${messageId}`);
+      if (selectedConvIdRef.current === conversationId) {
+        setMessages((current) => current.filter((message) => message.id !== messageId));
+      }
+      void fetchConversations();
+      return { ok: true };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.response?.data?.error || 'Xóa tin nhắn thất bại.',
+      };
+    } finally {
+      setMessageActionPending((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+    }
+  }, [fetchConversations]);
+
+  const recallMessage = useCallback(async (messageId: string): Promise<SendMessageResult> => {
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId) return { ok: false, error: 'Chưa chọn cuộc trò chuyện.' };
+    setMessageActionPending((current) => ({ ...current, [messageId]: 'recall' }));
+    try {
+      const response = await api.post(`/conversations/${conversationId}/messages/${messageId}/recall`);
+      if (selectedConvIdRef.current === conversationId) {
+        const updated = response.data as Message;
+        setMessages((current) => current.map((message) => (
+          message.id === messageId ? { ...message, ...updated, isDeleted: true } : message
+        )));
+      }
+      void fetchConversations();
+      return { ok: true };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.response?.data?.error || 'Thu hồi tin nhắn thất bại.',
+      };
+    } finally {
+      setMessageActionPending((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+    }
+  }, [fetchConversations]);
+
+  const reactToMessage = useCallback(async (
+    messageId: string,
+    icon: string,
+  ): Promise<SendMessageResult> => {
+    const conversationId = selectedConvIdRef.current;
+    if (!conversationId) return { ok: false, error: 'Chưa chọn cuộc trò chuyện.' };
+    setMessageActionPending((current) => ({ ...current, [messageId]: 'reaction' }));
+    try {
+      const response = await api.put(
+        `/conversations/${conversationId}/messages/${messageId}/reaction`,
+        { icon },
+      );
+      if (selectedConvIdRef.current === conversationId) {
+        const updated = response.data as Message;
+        setMessages((current) => current.map((message) => (
+          message.id === messageId ? { ...message, reactions: updated.reactions ?? [] } : message
+        )));
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.response?.data?.error || 'Cập nhật biểu cảm thất bại.',
+      };
+    } finally {
+      setMessageActionPending((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+    }
+  }, []);
+
   const initSocket = useCallback(() => {
     const onMsg = (data: { message: Message; conversationId: string }) => {
       // Add to messages if viewing this conversation (dedupe by id — the
@@ -350,18 +454,50 @@ export function useChat() {
       void fetchConversations();
     };
 
-    const onDel = (data: { msgId: string }) => {
+    const onDel = (data: { conversationId?: string; messageId?: string; msgId: string }) => {
+      void fetchConversations();
+      if (data.conversationId && data.conversationId !== selectedConvIdRef.current) return;
       setMessages((prev) =>
-        prev.map((m) => (m.zaloMsgId === data.msgId ? { ...m, isDeleted: true } : m)),
+        prev.map((m) => (
+          (data.messageId && m.id === data.messageId) || m.zaloMsgId === data.msgId
+            ? { ...m, isDeleted: true }
+            : m
+        )),
       );
+    };
+
+    const onRemove = (data: { conversationId?: string; messageId?: string; msgId: string }) => {
+      void fetchConversations();
+      if (data.conversationId && data.conversationId !== selectedConvIdRef.current) return;
+      setMessages((prev) => prev.filter((message) => (
+        data.messageId ? message.id !== data.messageId : message.zaloMsgId !== data.msgId
+      )));
+    };
+
+    const onReaction = (data: {
+      conversationId?: string;
+      messageId?: string;
+      msgId: string;
+      reactions?: MessageReaction[];
+    }) => {
+      if (data.conversationId && data.conversationId !== selectedConvIdRef.current) return;
+      setMessages((prev) => prev.map((message) => (
+        (data.messageId && message.id === data.messageId) || message.zaloMsgId === data.msgId
+          ? { ...message, reactions: data.reactions ?? [] }
+          : message
+      )));
     };
 
     const offMsg = onChatMessage(onMsg);
     const offDel = onChatDeleted(onDel);
+    const offRemove = onChatRemoved(onRemove);
+    const offReaction = onChatReaction(onReaction);
 
     return () => {
       offMsg();
       offDel();
+      offRemove();
+      offReaction();
       setActiveConversation(null);
     };
   }, [fetchConversations]);
@@ -393,6 +529,7 @@ export function useChat() {
     hasOlderMessages,
     messageError,
     sendingMsg,
+    messageActionPending,
     searchQuery,
     setSearchQuery,
     accountFilter,
@@ -405,6 +542,9 @@ export function useChat() {
     loadOlderMessages,
     sendMessage,
     sendAttachments,
+    deleteMessage,
+    recallMessage,
+    reactToMessage,
     initSocket,
     destroySocket,
   };

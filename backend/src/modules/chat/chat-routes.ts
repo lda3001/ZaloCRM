@@ -17,6 +17,23 @@ type QueryParams = Record<string, string>;
 const GROUP_INFO_CACHE_TTL_MS = 10 * 60_000;
 const GROUP_INFO_CACHE_MAX_ENTRIES = 300;
 const groupInfoCache = new Map<string, { payload: any; cachedAt: number }>();
+const MESSAGE_REACTIONS = new Set(['/-strong', '/-heart', ':>', ':o', ':-((', ':-h']);
+
+interface StoredMessageReaction {
+  userId: string;
+  userName: string | null;
+  icon: string;
+  isSelf: boolean;
+}
+
+function storedMessageReactions(value: unknown): StoredMessageReaction[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is StoredMessageReaction => {
+    if (!item || typeof item !== 'object') return false;
+    const reaction = item as Partial<StoredMessageReaction>;
+    return typeof reaction.userId === 'string' && typeof reaction.icon === 'string';
+  });
+}
 
 interface ZaloMuteEntry {
   id?: string | number;
@@ -424,6 +441,200 @@ export async function chatRoutes(app: FastifyInstance) {
     ]);
 
     return { messages: messages.reverse(), total, page: parseInt(page), limit: parseInt(limit) };
+  });
+
+  // Delete a message only from the connected Zalo account and this CRM.
+  app.delete('/api/v1/conversations/:id/messages/:messageId', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id, messageId } = request.params as { id: string; messageId: string };
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      select: {
+        id: true,
+        zaloAccountId: true,
+        externalThreadId: true,
+        threadType: true,
+      },
+    });
+    if (!conversation) return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    if (!conversation.externalThreadId) {
+      return reply.status(409).send({ error: 'Cuộc trò chuyện chưa có mã Zalo' });
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversationId: id },
+    });
+    if (!message) return reply.status(404).send({ error: 'Không tìm thấy tin nhắn' });
+    if (!message.zaloMsgId || !message.zaloCliMsgId || !message.senderUid) {
+      return reply.status(409).send({ error: 'Tin nhắn cũ chưa có đủ dữ liệu Zalo để xóa' });
+    }
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+
+    try {
+      await instance.api.deleteMessage({
+        data: {
+          msgId: message.zaloMsgId,
+          cliMsgId: message.zaloCliMsgId,
+          uidFrom: message.senderUid,
+        },
+        threadId: conversation.externalThreadId,
+        type: conversation.threadType === 'group' ? 1 : 0,
+      }, true);
+
+      await prisma.message.delete({ where: { id: message.id } });
+      const latestMessage = await prisma.message.findFirst({
+        where: { conversationId: id },
+        orderBy: { sentAt: 'desc' },
+        select: { sentAt: true, senderType: true },
+      });
+      await prisma.conversation.update({
+        where: { id },
+        data: {
+          lastMessageAt: latestMessage?.sentAt ?? null,
+          isReplied: latestMessage ? latestMessage.senderType === 'self' : true,
+        },
+      });
+      const io = (app as any).io as Server;
+      io?.emit('chat:removed', {
+        accountId: conversation.zaloAccountId,
+        conversationId: id,
+        messageId: message.id,
+        msgId: message.zaloMsgId,
+      });
+      return { messageId: message.id };
+    } catch (err) {
+      logger.error(`[chat] Delete message ${message.id} error:`, err);
+      return reply.status(502).send({ error: 'Zalo không thể xóa tin nhắn này' });
+    }
+  });
+
+  // Recall an outbound message for everyone in the Zalo conversation.
+  app.post('/api/v1/conversations/:id/messages/:messageId/recall', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id, messageId } = request.params as { id: string; messageId: string };
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      select: { zaloAccountId: true, externalThreadId: true, threadType: true },
+    });
+    if (!conversation) return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    if (!conversation.externalThreadId) {
+      return reply.status(409).send({ error: 'Cuộc trò chuyện chưa có mã Zalo' });
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversationId: id },
+    });
+    if (!message) return reply.status(404).send({ error: 'Không tìm thấy tin nhắn' });
+    if (message.senderType !== 'self') {
+      return reply.status(403).send({ error: 'Chỉ có thể thu hồi tin nhắn do tài khoản này gửi' });
+    }
+    if (message.isDeleted) return message;
+    if (!message.zaloMsgId || !message.zaloCliMsgId) {
+      return reply.status(409).send({ error: 'Tin nhắn cũ chưa có đủ dữ liệu Zalo để thu hồi' });
+    }
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+
+    try {
+      await instance.api.undo(
+        { msgId: message.zaloMsgId, cliMsgId: message.zaloCliMsgId },
+        conversation.externalThreadId,
+        conversation.threadType === 'group' ? 1 : 0,
+      );
+      const updated = await prisma.message.update({
+        where: { id: message.id },
+        data: { isDeleted: true, deletedAt: new Date() },
+      });
+      const io = (app as any).io as Server;
+      io?.emit('chat:deleted', {
+        accountId: conversation.zaloAccountId,
+        conversationId: id,
+        messageId: message.id,
+        msgId: message.zaloMsgId,
+      });
+      return updated;
+    } catch (err) {
+      logger.error(`[chat] Recall message ${message.id} error:`, err);
+      return reply.status(502).send({ error: 'Zalo không thể thu hồi tin nhắn này' });
+    }
+  });
+
+  // Toggle the connected account's reaction on one Zalo message.
+  app.put('/api/v1/conversations/:id/messages/:messageId/reaction', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id, messageId } = request.params as { id: string; messageId: string };
+    const { icon } = (request.body ?? {}) as { icon?: unknown };
+    if (typeof icon !== 'string' || !MESSAGE_REACTIONS.has(icon)) {
+      return reply.status(400).send({ error: 'Biểu cảm không hợp lệ' });
+    }
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      include: {
+        zaloAccount: { select: { zaloUid: true, displayName: true } },
+      },
+    });
+    if (!conversation) return reply.status(404).send({ error: 'Không tìm thấy cuộc trò chuyện' });
+    if (!conversation.externalThreadId) {
+      return reply.status(409).send({ error: 'Cuộc trò chuyện chưa có mã Zalo' });
+    }
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversationId: id },
+    });
+    if (!message) return reply.status(404).send({ error: 'Không tìm thấy tin nhắn' });
+    if (message.isDeleted) return reply.status(409).send({ error: 'Tin nhắn đã được thu hồi' });
+    if (!message.zaloMsgId || !message.zaloCliMsgId) {
+      return reply.status(409).send({ error: 'Tin nhắn cũ chưa có đủ dữ liệu Zalo để thả biểu cảm' });
+    }
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) return reply.status(409).send({ error: 'Tài khoản Zalo chưa kết nối' });
+    const actorUid = String(instance.zaloUid || conversation.zaloAccount.zaloUid || '').replace(/_0$/, '');
+    if (!actorUid) return reply.status(409).send({ error: 'Không xác định được tài khoản Zalo' });
+
+    const current = storedMessageReactions(message.reactions);
+    const ownReaction = current.find((reaction) => (
+      reaction.userId.replace(/_0$/, '') === actorUid || reaction.isSelf
+    ));
+    const nextIcon = ownReaction?.icon === icon ? '' : icon;
+    const reactions = current.filter((reaction) => (
+      reaction.userId.replace(/_0$/, '') !== actorUid && !reaction.isSelf
+    ));
+    if (nextIcon) {
+      reactions.push({
+        userId: actorUid,
+        userName: conversation.zaloAccount.displayName,
+        icon: nextIcon,
+        isSelf: true,
+      });
+    }
+
+    try {
+      await instance.api.addReaction(nextIcon, {
+        data: { msgId: message.zaloMsgId, cliMsgId: message.zaloCliMsgId },
+        threadId: conversation.externalThreadId,
+        type: conversation.threadType === 'group' ? 1 : 0,
+      });
+      const updated = await prisma.message.update({
+        where: { id: message.id },
+        data: { reactions: reactions as any },
+      });
+      const io = (app as any).io as Server;
+      io?.emit('chat:reaction', {
+        accountId: conversation.zaloAccountId,
+        conversationId: id,
+        messageId: message.id,
+        msgId: message.zaloMsgId,
+        reactions: updated.reactions,
+      });
+      return updated;
+    } catch (err) {
+      logger.error(`[chat] React to message ${message.id} error:`, err);
+      return reply.status(502).send({ error: 'Zalo không thể cập nhật biểu cảm' });
+    }
   });
 
   // ── Send message ─────────────────────────────────────────────────────────

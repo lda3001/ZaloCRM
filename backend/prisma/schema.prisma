@@ -162,12 +162,14 @@ model Message {
   id              String    @id @default(uuid())
   conversationId  String    @map("conversation_id")
   zaloMsgId       String?   @map("zalo_msg_id")
+  zaloCliMsgId    String?   @map("zalo_cli_msg_id")
   senderType      String    @map("sender_type") // self, contact
   senderUid       String?   @map("sender_uid")
   senderName      String?   @map("sender_name")
   content         String?
   contentType     String    @default("text") @map("content_type") // text, image, file, sticker, voice, video, link
   attachments     Json      @default("[]")
+  reactions       Json      @default("[]")
   isDeleted       Boolean   @default(false) @map("is_deleted")
   deletedAt       DateTime? @map("deleted_at")
   sentAt          DateTime  @map("sent_at")

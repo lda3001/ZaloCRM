@@ -18,6 +18,13 @@ export interface ChatSocketMessage {
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
+  zaloCliMsgId: string | null;
+  reactions: Array<{
+    userId: string;
+    userName: string | null;
+    icon: string;
+    isSelf: boolean;
+  }>;
 }
 
 export interface ChatMessagePayload {
@@ -30,10 +37,24 @@ export interface ChatMessagePayload {
 }
 
 type MessageListener = (payload: ChatMessagePayload) => void;
-type DeletedListener = (payload: { msgId: string }) => void;
+export interface ChatMessageMutationPayload {
+  conversationId?: string;
+  messageId?: string;
+  msgId: string;
+}
+
+export interface ChatReactionPayload extends ChatMessageMutationPayload {
+  reactions: ChatSocketMessage['reactions'];
+}
+
+type DeletedListener = (payload: ChatMessageMutationPayload) => void;
+type RemovedListener = (payload: ChatMessageMutationPayload) => void;
+type ReactionListener = (payload: ChatReactionPayload) => void;
 
 const msgListeners = new Set<MessageListener>();
 const delListeners = new Set<DeletedListener>();
+const removeListeners = new Set<RemovedListener>();
+const reactionListeners = new Set<ReactionListener>();
 let socket: Socket | null = null;
 let activeConversationId: string | null = null;
 
@@ -86,8 +107,16 @@ export function startChatSocket(): void {
     msgListeners.forEach((fn) => fn(data));
   });
 
-  s.on('chat:deleted', (data: { msgId: string }) => {
+  s.on('chat:deleted', (data: ChatMessageMutationPayload) => {
     delListeners.forEach((fn) => fn(data));
+  });
+
+  s.on('chat:removed', (data: ChatMessageMutationPayload) => {
+    removeListeners.forEach((fn) => fn(data));
+  });
+
+  s.on('chat:reaction', (data: ChatReactionPayload) => {
+    reactionListeners.forEach((fn) => fn(data));
   });
 }
 
@@ -96,6 +125,8 @@ export function stopChatSocket(): void {
   socket = null;
   msgListeners.clear();
   delListeners.clear();
+  removeListeners.clear();
+  reactionListeners.clear();
   activeConversationId = null;
 }
 
@@ -107,6 +138,16 @@ export function onChatMessage(fn: MessageListener): () => void {
 export function onChatDeleted(fn: DeletedListener): () => void {
   delListeners.add(fn);
   return () => void delListeners.delete(fn);
+}
+
+export function onChatRemoved(fn: RemovedListener): () => void {
+  removeListeners.add(fn);
+  return () => void removeListeners.delete(fn);
+}
+
+export function onChatReaction(fn: ReactionListener): () => void {
+  reactionListeners.add(fn);
+  return () => void reactionListeners.delete(fn);
 }
 
 /** Which conversation is currently open in the UI (used to suppress own-conv toasts). */

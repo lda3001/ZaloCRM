@@ -5,7 +5,11 @@
  */
 import type { Server } from 'socket.io';
 import { logger } from '../../shared/utils/logger.js';
-import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
+import {
+  handleIncomingMessage,
+  handleMessageReaction,
+  handleMessageUndo,
+} from '../chat/message-handler.js';
 import { detectContentType, updateContactAvatar } from './zalo-message-helpers.js';
 
 // Cached user info entry with 5-minute TTL
@@ -128,6 +132,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         content,
         contentType,
         msgId: String(message.data?.msgId || ''),
+        cliMsgId: String(message.data?.cliMsgId || ''),
         timestamp: parseInt(message.data?.ts || String(Date.now())),
         isSelf: message.isSelf || false,
         threadId: message.threadId || '',
@@ -151,10 +156,50 @@ export function attachZaloListener(ctx: ListenerContext): void {
   });
 
   listener.on('undo', async (data: any) => {
-    const msgId = data.data?.msgId || data.msgId;
+    // Top-level msgId identifies the undo event itself. The recalled message
+    // is referenced from content.globalMsgId.
+    const msgId = data.data?.content?.globalMsgId;
     if (msgId) {
-      await handleMessageUndo(accountId, String(msgId));
-      io?.emit('chat:deleted', { accountId, msgId: String(msgId) });
+      const affected = await handleMessageUndo(accountId, String(msgId));
+      for (const message of affected) {
+        io?.emit('chat:deleted', {
+          accountId,
+          conversationId: message.conversationId,
+          messageId: message.id,
+          msgId: String(msgId),
+        });
+      }
+    }
+  });
+
+  listener.on('reaction', async (event: any) => {
+    try {
+      const content = event.data?.content;
+      const targets = Array.isArray(content?.rMsg) ? content.rMsg : [];
+      const actorUid = String(event.data?.uidFrom || '');
+      if (!actorUid) return;
+
+      for (const target of targets) {
+        const msgId = String(target?.gMsgID || '');
+        if (!msgId) continue;
+        const message = await handleMessageReaction(accountId, msgId, {
+          userId: actorUid,
+          userName: event.data?.dName || null,
+          icon: String(content?.rIcon || ''),
+          isSelf: Boolean(event.isSelf),
+        });
+        if (message) {
+          io?.emit('chat:reaction', {
+            accountId,
+            conversationId: message.conversationId,
+            messageId: message.id,
+            msgId,
+            reactions: message.reactions,
+          });
+        }
+      }
+    } catch (err) {
+      logger.error(`[zalo:${accountId}] Reaction handler error:`, err);
     }
   });
 
