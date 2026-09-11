@@ -62,6 +62,7 @@ export default function ChatView() {
   const [rightWidth, setRightWidth] = useState(() => readWidth('chat-right-width', 320));
   const leftWidthRef = useRef(leftWidth);
   const rightWidthRef = useRef(rightWidth);
+  const floatingDockRef = useRef<HTMLDivElement | null>(null);
 
   // Mobile: list OR thread (desktop always shows both).
   const [isMobile, setIsMobile] = useState(
@@ -225,6 +226,16 @@ export default function ChatView() {
     )));
   }, [conversations]);
 
+  // Keep the newest window visible when the dock has more chats than fit on screen.
+  useEffect(() => {
+    const dock = floatingDockRef.current;
+    if (!dock) return;
+    const frame = window.requestAnimationFrame(() => {
+      dock.scrollTo({ left: dock.scrollWidth, behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [floatingChats.length]);
+
   function handleSaved() {
     void fetchConversations();
   }
@@ -344,8 +355,8 @@ export default function ChatView() {
         </Modal>
       )}
       {!isMobile && floatingChats.length > 0 && (
-        <div className="multi-chat-dock" aria-label="Các cửa sổ chat đang mở">
-          {[...floatingChats].reverse().map((conversation) => (
+        <div ref={floatingDockRef} className="multi-chat-dock" aria-label="Các cửa sổ chat đang mở">
+          {floatingChats.map((conversation) => (
             <FloatingChatWindow
               key={conversation.id}
               conversation={conversation}

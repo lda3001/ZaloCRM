@@ -278,7 +278,7 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
   display: flex;
   flex-direction: row;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 12px;
   overflow-x: auto;
   padding: 8px 2px 4px;
@@ -289,10 +289,11 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 .multi-chat-window {
   width: 370px;
   height: min(570px, calc(100dvh - 96px));
-  min-width: 330px;
+  min-width: 280px;
+  max-width: 370px;
   overflow: hidden;
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 370px;
   flex-direction: column;
   border: 1px solid rgba(8, 104, 232, 0.24);
   border-radius: 16px;
@@ -303,9 +304,14 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
   animation: multi-chat-window-in 180ms cubic-bezier(.2, .85, .3, 1.08) both;
 }
 
+/* Right-align when there is room; auto margin becomes zero once the row overflows. */
+.multi-chat-window:first-child { margin-left: auto; }
+
 .multi-chat-window--minimized {
   width: 270px;
-  min-width: 240px;
+  min-width: 220px;
+  max-width: 270px;
+  flex: 0 1 270px;
   height: auto;
   border-radius: 14px;
 }
@@ -321,10 +327,12 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 .multi-chat-window__body {
   display: flex;
   overflow: hidden;
+  min-width: 0;
 }
 
-.multi-chat-window .chat-message-list { padding-inline: 10px; }
-.multi-chat-window .chat-message-bubble { max-width: 248px; }
+.multi-chat-window .chat-canvas { width: 100%; min-width: 0; overflow: hidden; }
+.multi-chat-window .chat-message-list { padding-inline: 10px; overflow-x: hidden; }
+.multi-chat-window .chat-message-bubble { max-width: min(248px, calc(100% - 42px)); }
 .multi-chat-window .chat-toolbar--composer { gap: 5px; padding: 7px; }
 .multi-chat-window .chat-composer-actions { gap: 0; }
 .multi-chat-window .chat-picker { width: 345px; }
@@ -409,7 +417,7 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 
 @media (max-width: 1100px) and (min-width: 768px) {
   .multi-chat-dock { left: 72px; right: 10px; bottom: 10px; gap: 8px; }
-  .multi-chat-window { width: 340px; min-width: 310px; }
+  .multi-chat-window { width: 340px; min-width: 270px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
