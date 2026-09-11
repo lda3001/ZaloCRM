@@ -228,6 +228,32 @@ html:not(.dark) ::-webkit-scrollbar-track { background: transparent; }
 .chat-message-bubble { overflow-wrap: anywhere; }
 .chat-message-bubble audio { width: 100%; min-width: 0; }
 
+/* Zalo-style message controls: hover/focus on mouse, long-press sheet on touch. */
+.chat-message-actions {
+  display: flex;
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-message-actions {
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 120ms ease, transform 120ms ease;
+  }
+  .chat-message-row:hover .chat-message-actions,
+  .chat-message-row:focus-within .chat-message-actions {
+    pointer-events: auto;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .chat-message-actions { display: none; }
+  .chat-message-bubble { -webkit-touch-callout: none; }
+}
+
 @media (max-width: 767px) {
   .app-shell { height: var(--mobile-app-height, 100dvh); }
   .app-header {

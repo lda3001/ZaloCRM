@@ -98,6 +98,71 @@ function summarizeReactions(reactions: MessageReaction[] | null | undefined) {
   return Array.from(summaries.values());
 }
 
+function MessageReactionPicker({
+  selectedIcon,
+  disabled = false,
+  onSelect,
+}: {
+  selectedIcon?: string;
+  disabled?: boolean;
+  onSelect: (icon: string) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-1">
+      {MESSAGE_REACTION_OPTIONS.map((reaction) => (
+        <button
+          key={reaction.icon}
+          type="button"
+          className={`flex h-11 w-11 items-center justify-center rounded-full text-2xl transition-transform hover:scale-110 hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+            selectedIcon === reaction.icon ? 'bg-primary/15 ring-2 ring-primary/50' : ''
+          }`}
+          aria-label={selectedIcon === reaction.icon ? `Gỡ ${reaction.label}` : reaction.label}
+          title={selectedIcon === reaction.icon ? `Gỡ ${reaction.label}` : reaction.label}
+          disabled={disabled}
+          onClick={() => onSelect(reaction.icon)}
+        >
+          {reaction.emoji}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MessageActionMenu({
+  isSelf,
+  isDeleted,
+  onDelete,
+  onRecall,
+}: {
+  isSelf: boolean;
+  isDeleted: boolean;
+  onDelete: () => void;
+  onRecall: () => void;
+}) {
+  return (
+    <div className="w-full">
+      <button
+        type="button"
+        className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-danger transition-colors hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+        onClick={onDelete}
+      >
+        <Trash size={20} />
+        Xóa ở phía tôi
+      </button>
+      {isSelf && !isDeleted && (
+        <button
+          type="button"
+          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-warning-600 transition-colors hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning"
+          onClick={onRecall}
+        >
+          <ArrowCounterClockwise size={20} />
+          Thu hồi với mọi người
+        </button>
+      )}
+    </div>
+  );
+}
+
 function formatMessageTime(d: string): string {
   return new Date(d).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
 }
@@ -604,6 +669,8 @@ function MessageThread({
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [syncSnack, setSyncSnack] = useState({ show: false, text: '', color: 'success' });
   const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
+  const [activeReactionMessageId, setActiveReactionMessageId] = useState<string | null>(null);
+  const [mobileActionMessageId, setMobileActionMessageId] = useState<string | null>(null);
   const [confirmMessageAction, setConfirmMessageAction] = useState<{
     messageId: string;
     action: 'delete' | 'recall';
@@ -616,12 +683,22 @@ function MessageThread({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const longPressRef = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const suppressMessageClickRef = useRef(false);
   useEffect(() => {
     setPendingFiles([]);
     setActiveActionMessageId(null);
+    setActiveReactionMessageId(null);
+    setMobileActionMessageId(null);
     setConfirmMessageAction(null);
+    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
+    longPressRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation?.id]);
+
+  useEffect(() => () => {
+    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
+  }, []);
 
   useEffect(() => {
     groupMembersRef.current = {};
@@ -1090,6 +1167,8 @@ function MessageThread({
   async function reactToMessage(messageId: string, icon: string) {
     if (!onReactMessage || messageActionPending[messageId]) return;
     setActiveActionMessageId(null);
+    setActiveReactionMessageId(null);
+    setMobileActionMessageId(null);
     const result = await onReactMessage(messageId, icon);
     if (!result.ok) {
       setSyncSnack({
@@ -1117,6 +1196,51 @@ function MessageThread({
         : result.error || (action === 'delete' ? 'Xóa tin nhắn thất bại.' : 'Thu hồi tin nhắn thất bại.'),
       color: result.ok ? 'success' : 'error',
     });
+  }
+
+  function cancelMessageLongPress() {
+    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
+    longPressRef.current = null;
+  }
+
+  function startMessageLongPress(messageId: string, event: React.PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === 'mouse') return;
+    const target = event.target as HTMLElement;
+    if (target.closest('button, a, input, video, audio')) return;
+    cancelMessageLongPress();
+    const x = event.clientX;
+    const y = event.clientY;
+    const timer = window.setTimeout(() => {
+      longPressRef.current = null;
+      suppressMessageClickRef.current = true;
+      setActiveActionMessageId(null);
+      setActiveReactionMessageId(null);
+      setMobileActionMessageId(messageId);
+      if ('vibrate' in navigator) navigator.vibrate(12);
+      window.setTimeout(() => {
+        suppressMessageClickRef.current = false;
+      }, 500);
+    }, 420);
+    longPressRef.current = { timer, x, y };
+  }
+
+  function moveMessageLongPress(event: React.PointerEvent<HTMLDivElement>) {
+    const pending = longPressRef.current;
+    if (!pending) return;
+    if (Math.abs(event.clientX - pending.x) > 10 || Math.abs(event.clientY - pending.y) > 10) {
+      cancelMessageLongPress();
+    }
+  }
+
+  function openMessageContextMenu(messageId: string, event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    cancelMessageLongPress();
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      setMobileActionMessageId(messageId);
+    } else {
+      setActiveReactionMessageId(null);
+      setActiveActionMessageId(messageId);
+    }
   }
 
   useLayoutEffect(() => {
@@ -1158,6 +1282,9 @@ function MessageThread({
       </div>
     );
   }
+
+  const mobileActionMessage = messages.find((message) => message.id === mobileActionMessageId) ?? null;
+  const mobileOwnReactionIcon = mobileActionMessage?.reactions?.find((reaction) => reaction.isSelf)?.icon;
 
   return (
     <div className="chat-canvas relative flex h-full flex-1 flex-col">
@@ -1313,73 +1440,79 @@ function MessageThread({
           const reactionSummaries = summarizeReactions(msg.reactions);
           const ownReactionIcon = msg.reactions?.find((reaction) => reaction.isSelf)?.icon;
           const pendingAction = messageActionPending[msg.id];
+          const openDeleteConfirmation = () => {
+            setActiveActionMessageId(null);
+            setMobileActionMessageId(null);
+            setConfirmMessageAction({ messageId: msg.id, action: 'delete' });
+          };
+          const openRecallConfirmation = () => {
+            setActiveActionMessageId(null);
+            setMobileActionMessageId(null);
+            setConfirmMessageAction({ messageId: msg.id, action: 'recall' });
+          };
           const messageActions = (
-            <div className="shrink-0 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
+            <div className="chat-message-actions shrink-0 items-center gap-0.5">
+              {!msg.isDeleted && (
+                <Popover
+                  placement={isSelf ? 'top-end' : 'top-start'}
+                  isOpen={activeReactionMessageId === msg.id}
+                  onOpenChange={(open) => {
+                    setActiveReactionMessageId(open ? msg.id : null);
+                    if (open) setActiveActionMessageId(null);
+                  }}
+                >
+                  <PopoverTrigger>
+                    <button
+                      type="button"
+                      className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                        ownReactionIcon ? 'text-primary' : 'text-foreground-500 hover:text-foreground'
+                      }`}
+                      aria-label="Thả biểu cảm"
+                      title="Thả biểu cảm"
+                      disabled={Boolean(pendingAction)}
+                    >
+                      {pendingAction === 'reaction' ? <Spinner size="sm" /> : <Smiley size={19} />}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="rounded-full p-1.5 shadow-lg">
+                    <div className="w-[286px] max-w-[calc(100vw-24px)]">
+                      <MessageReactionPicker
+                        selectedIcon={ownReactionIcon}
+                        disabled={Boolean(pendingAction)}
+                        onSelect={(icon) => void reactToMessage(msg.id, icon)}
+                      />
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
               <Popover
                 placement={isSelf ? 'top-end' : 'top-start'}
                 isOpen={activeActionMessageId === msg.id}
-                onOpenChange={(open) => setActiveActionMessageId(open ? msg.id : null)}
+                onOpenChange={(open) => {
+                  setActiveActionMessageId(open ? msg.id : null);
+                  if (open) setActiveReactionMessageId(null);
+                }}
               >
                 <PopoverTrigger>
                   <button
-                    type="button"
-                    className="flex h-10 w-10 items-center justify-center rounded-full text-foreground-500 transition-colors hover:bg-default-100 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary md:h-8 md:w-8"
-                    aria-label="Thao tác với tin nhắn"
-                    title="Thao tác với tin nhắn"
-                    disabled={Boolean(pendingAction)}
-                  >
-                    {pendingAction ? <Spinner size="sm" /> : <DotsThree size={22} weight="bold" />}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent className="p-2">
-                  <div className="w-[268px] max-w-[calc(100vw-32px)]">
-                    {!msg.isDeleted && (
-                      <>
-                        <div className="px-1 pb-1 text-xs font-medium text-foreground-500">Thả biểu cảm</div>
-                        <div className="flex items-center justify-between gap-1 pb-2">
-                          {MESSAGE_REACTION_OPTIONS.map((reaction) => (
-                            <button
-                              key={reaction.icon}
-                              type="button"
-                              className={`flex h-10 w-10 items-center justify-center rounded-full text-xl transition-transform hover:scale-110 hover:bg-default-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                                ownReactionIcon === reaction.icon ? 'bg-primary/15 ring-2 ring-primary/50' : ''
-                              }`}
-                              aria-label={reaction.label}
-                              title={reaction.label}
-                              onClick={() => void reactToMessage(msg.id, reaction.icon)}
-                            >
-                              {reaction.emoji}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="border-t border-default" />
-                      </>
-                    )}
-                    <button
                       type="button"
-                      className="mt-1 flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-danger transition-colors hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
-                      onClick={() => {
-                        setActiveActionMessageId(null);
-                        setConfirmMessageAction({ messageId: msg.id, action: 'delete' });
-                      }}
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-foreground-500 transition-colors hover:bg-default-100 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      aria-label="Thêm thao tác"
+                      title="Thêm thao tác"
+                      disabled={Boolean(pendingAction)}
                     >
-                      <Trash size={18} />
-                      Xóa ở phía tôi
+                      {pendingAction && pendingAction !== 'reaction'
+                        ? <Spinner size="sm" />
+                        : <DotsThree size={21} weight="bold" />}
                     </button>
-                    {isSelf && !msg.isDeleted && (
-                      <button
-                        type="button"
-                        className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-warning-600 transition-colors hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning"
-                        onClick={() => {
-                          setActiveActionMessageId(null);
-                          setConfirmMessageAction({ messageId: msg.id, action: 'recall' });
-                        }}
-                      >
-                        <ArrowCounterClockwise size={18} />
-                        Thu hồi với mọi người
-                      </button>
-                    )}
-                  </div>
+                </PopoverTrigger>
+                <PopoverContent className="w-[220px] p-1.5 shadow-lg">
+                  <MessageActionMenu
+                    isSelf={isSelf}
+                    isDeleted={msg.isDeleted}
+                    onDelete={openDeleteConfirmation}
+                    onRecall={openRecallConfirmation}
+                  />
                 </PopoverContent>
               </Popover>
             </div>
@@ -1394,7 +1527,7 @@ function MessageThread({
               </div>
             )}
           <div
-            className={`group mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
+            className={`chat-message-row group mb-2 flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}
           >
             {!isSelf && (
               <button
@@ -1431,6 +1564,17 @@ function MessageThread({
                     : 'chat-message-bubble--received bg-content2 text-foreground rounded-2xl rounded-tl-md'
                 }`}
                 style={{ wordWrap: 'break-word' }}
+                onPointerDown={(event) => startMessageLongPress(msg.id, event)}
+                onPointerMove={moveMessageLongPress}
+                onPointerUp={cancelMessageLongPress}
+                onPointerCancel={cancelMessageLongPress}
+                onPointerLeave={cancelMessageLongPress}
+                onContextMenu={(event) => openMessageContextMenu(msg.id, event)}
+                onClickCapture={(event) => {
+                  if (!suppressMessageClickRef.current) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
               >
                 {/* Deleted */}
                 {msg.isDeleted ? (
@@ -1840,6 +1984,50 @@ function MessageThread({
           </div>
         )}
       </div>
+
+      {/* Zalo-style touch actions: long-press a bubble to open this sheet. */}
+      <Modal
+        isOpen={Boolean(mobileActionMessage)}
+        onOpenChange={(open) => !open && setMobileActionMessageId(null)}
+        size="sm"
+        placement="bottom"
+        hideCloseButton
+        classNames={{ base: 'm-0 rounded-b-none' }}
+      >
+        <ModalContent>
+          <ModalBody className="gap-3 px-3 pt-2" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
+            <div className="mx-auto h-1 w-10 rounded-full bg-default-300" aria-hidden="true" />
+            {mobileActionMessage && !mobileActionMessage.isDeleted && (
+              <div>
+                <div className="mb-2 px-1 text-xs font-medium text-foreground-500">Thả biểu cảm</div>
+                <MessageReactionPicker
+                  selectedIcon={mobileOwnReactionIcon}
+                  disabled={Boolean(messageActionPending[mobileActionMessage.id])}
+                  onSelect={(icon) => void reactToMessage(mobileActionMessage.id, icon)}
+                />
+              </div>
+            )}
+            {mobileActionMessage && (
+              <div className="border-t border-default pt-1">
+                <MessageActionMenu
+                  isSelf={mobileActionMessage.senderType === 'self'}
+                  isDeleted={mobileActionMessage.isDeleted}
+                  onDelete={() => {
+                    const messageId = mobileActionMessage.id;
+                    setMobileActionMessageId(null);
+                    setConfirmMessageAction({ messageId, action: 'delete' });
+                  }}
+                  onRecall={() => {
+                    const messageId = mobileActionMessage.id;
+                    setMobileActionMessageId(null);
+                    setConfirmMessageAction({ messageId, action: 'recall' });
+                  }}
+                />
+              </div>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
 
       {/* Confirm destructive message actions */}
       <Modal
