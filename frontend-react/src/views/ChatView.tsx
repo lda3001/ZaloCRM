@@ -71,6 +71,7 @@ export default function ChatView() {
   const [mobileView, setMobileView] = useState<'list' | 'thread'>('list');
   const [floatingChats, setFloatingChats] = useState<typeof conversations>([]);
   const [minimizedChatIds, setMinimizedChatIds] = useState<Set<string>>(new Set());
+  const [activeFloatingChatId, setActiveFloatingChatId] = useState<string | null>(null);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
@@ -190,6 +191,7 @@ export default function ChatView() {
     }
     const conversation = conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
+    setActiveFloatingChatId(conversationId);
     setFloatingChats((current) => current.some((item) => item.id === conversationId)
       ? current.map((item) => item.id === conversationId ? conversation : item)
       : [...current, conversation]);
@@ -202,7 +204,13 @@ export default function ChatView() {
   }
 
   function closeFloatingChat(conversationId: string) {
+    const nextActiveId = floatingChats
+      .filter((item) => item.id !== conversationId)
+      .at(-1)?.id ?? null;
     setFloatingChats((current) => current.filter((item) => item.id !== conversationId));
+    setActiveFloatingChatId((activeId) => (
+      activeId === conversationId ? nextActiveId : activeId
+    ));
     setMinimizedChatIds((current) => {
       const next = new Set(current);
       next.delete(conversationId);
@@ -211,6 +219,7 @@ export default function ChatView() {
   }
 
   function toggleFloatingChat(conversationId: string) {
+    setActiveFloatingChatId(conversationId);
     setMinimizedChatIds((current) => {
       const next = new Set(current);
       if (next.has(conversationId)) next.delete(conversationId);
@@ -355,15 +364,27 @@ export default function ChatView() {
         </Modal>
       )}
       {!isMobile && floatingChats.length > 0 && (
-        <div ref={floatingDockRef} className="multi-chat-dock" aria-label="Các cửa sổ chat đang mở">
+        <div
+          ref={floatingDockRef}
+          className="multi-chat-dock"
+          aria-label="Các cửa sổ chat đang mở"
+          onWheel={(event) => {
+            const dock = event.currentTarget;
+            if (dock.scrollWidth <= dock.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+            dock.scrollLeft += event.deltaY;
+            event.preventDefault();
+          }}
+        >
           {floatingChats.map((conversation) => (
             <FloatingChatWindow
               key={conversation.id}
               conversation={conversation}
               conversations={conversations}
               minimized={minimizedChatIds.has(conversation.id)}
+              active={activeFloatingChatId === conversation.id}
               onClose={() => closeFloatingChat(conversation.id)}
               onToggleMinimize={() => toggleFloatingChat(conversation.id)}
+              onActivate={() => setActiveFloatingChatId(conversation.id)}
               onOpenConversation={openFloatingChat}
               onRefreshConversations={fetchConversations}
             />

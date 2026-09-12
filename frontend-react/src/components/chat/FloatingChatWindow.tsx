@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Avatar, Button } from '@heroui/react';
-import { Minus, User, UsersThree, X } from '@phosphor-icons/react';
+import { CaretUp, Minus, User, UsersThree, X } from '@phosphor-icons/react';
 import type { Conversation } from '../../hooks/use-chat';
 import { useFloatingChat } from '../../hooks/use-floating-chat';
 import MessageThread from './MessageThread';
@@ -9,8 +9,10 @@ interface Props {
   conversation: Conversation;
   conversations: Conversation[];
   minimized: boolean;
+  active: boolean;
   onClose: () => void;
   onToggleMinimize: () => void;
+  onActivate: () => void;
   onOpenConversation: (conversationId: string) => void;
   onRefreshConversations: () => void;
 }
@@ -19,8 +21,10 @@ export default function FloatingChatWindow({
   conversation,
   conversations,
   minimized,
+  active,
   onClose,
   onToggleMinimize,
+  onActivate,
   onOpenConversation,
   onRefreshConversations,
 }: Props) {
@@ -37,8 +41,10 @@ export default function FloatingChatWindow({
 
   return (
     <section
-      className={`multi-chat-window ${minimized ? 'multi-chat-window--minimized' : ''}`}
+      className={`multi-chat-window ${minimized ? 'multi-chat-window--minimized' : ''} ${active ? 'multi-chat-window--active' : ''}`}
       aria-label={`Cửa sổ chat với ${displayName}`}
+      onPointerDown={onActivate}
+      onFocusCapture={onActivate}
     >
       <header
         className="multi-chat-window__header flex items-center gap-2 border-b border-default px-2.5 py-2"
@@ -60,7 +66,7 @@ export default function FloatingChatWindow({
         >
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-semibold">{displayName}</span>
-            {minimized && conversation.unreadCount > 0 && (
+            {conversation.unreadCount > 0 && (
               <span className="shrink-0 rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold text-white">
                 {conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}
               </span>
@@ -79,7 +85,7 @@ export default function FloatingChatWindow({
           className="h-8 min-h-8 w-8 min-w-8"
           onPress={onToggleMinimize}
         >
-          <Minus size={17} />
+          {minimized ? <CaretUp size={17} /> : <Minus size={17} />}
         </Button>
         <Button
           isIconOnly
