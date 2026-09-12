@@ -19,6 +19,17 @@ function readWidth(key: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
+function getFloatingChatLimit(viewportWidth = window.innerWidth): number {
+  if (viewportWidth <= 767) return 0;
+  const isTablet = viewportWidth <= 1100;
+  const dockLeft = isTablet ? 72 : 88;
+  const dockRight = isTablet ? 10 : 16;
+  const windowWidth = isTablet ? 310 : 328;
+  const gap = 8;
+  const availableWidth = viewportWidth - dockLeft - dockRight;
+  return Math.max(1, Math.floor((availableWidth + gap) / (windowWidth + gap)));
+}
+
 export default function ChatView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -72,12 +83,28 @@ export default function ChatView() {
   const [floatingChats, setFloatingChats] = useState<typeof conversations>([]);
   const [minimizedChatIds, setMinimizedChatIds] = useState<Set<string>>(new Set());
   const [activeFloatingChatId, setActiveFloatingChatId] = useState<string | null>(null);
+  const [maxFloatingChats, setMaxFloatingChats] = useState(() => getFloatingChatLimit());
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const updateLimit = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        setMaxFloatingChats(getFloatingChatLimit());
+      });
+    };
+    window.addEventListener('resize', updateLimit);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', updateLimit);
+    };
   }, []);
 
   function startResize(panel: 'left' | 'right', e: React.MouseEvent) {
@@ -192,9 +219,14 @@ export default function ChatView() {
     const conversation = conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
     setActiveFloatingChatId(conversationId);
-    setFloatingChats((current) => current.some((item) => item.id === conversationId)
-      ? current.map((item) => item.id === conversationId ? conversation : item)
-      : [...current, conversation]);
+    setFloatingChats((current) => {
+      if (current.some((item) => item.id === conversationId)) {
+        return current.map((item) => item.id === conversationId ? conversation : item);
+      }
+      const remainingSlots = Math.max(0, Math.max(1, maxFloatingChats) - 1);
+      const retained = remainingSlots > 0 ? current.slice(-remainingSlots) : [];
+      return [...retained, conversation];
+    });
     setMinimizedChatIds((current) => {
       if (!current.has(conversationId)) return current;
       const next = new Set(current);
@@ -235,7 +267,29 @@ export default function ChatView() {
     )));
   }, [conversations]);
 
-  // Keep the newest window visible when the dock has more chats than fit on screen.
+  // The dock capacity follows the viewport. When it shrinks, preserve the
+  // newest chats and evict the oldest ones, matching Messenger-style popups.
+  useEffect(() => {
+    setFloatingChats((current) => (
+      maxFloatingChats === 0
+        ? []
+        : current.length > maxFloatingChats ? current.slice(-maxFloatingChats) : current
+    ));
+  }, [maxFloatingChats]);
+
+  // Remove state belonging to windows that were closed or automatically evicted.
+  useEffect(() => {
+    const openIds = new Set(floatingChats.map((conversation) => conversation.id));
+    setMinimizedChatIds((current) => {
+      const next = new Set([...current].filter((id) => openIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    setActiveFloatingChatId((activeId) => (
+      activeId && openIds.has(activeId) ? activeId : floatingChats.at(-1)?.id ?? null
+    ));
+  }, [floatingChats]);
+
+  // Keep the newest window visible while the dock is resizing.
   useEffect(() => {
     const dock = floatingDockRef.current;
     if (!dock) return;
